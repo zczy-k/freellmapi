@@ -1,0 +1,62 @@
+name: Build Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'DEPLOY.md'
+      - 'deploy.sh'
+      - '.github/workflows/ci.yml'
+      - 'repo-assets/**'
+      - 'LICENSE'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Prune devDependencies
+        run: npm prune --omit=dev
+
+      - name: Package release
+        run: |
+          mkdir -p /tmp/freellmapi-release
+          cp -r server/dist /tmp/freellmapi-release/server-dist
+          cp -r client/dist /tmp/freellmapi-release/client-dist
+          cp -r shared /tmp/freellmapi-release/shared
+          cp -r node_modules /tmp/freellmapi-release/node_modules
+          cp package.json package-lock.json /tmp/freellmapi-release/
+          cp server/package.json /tmp/freellmapi-release/server-package.json
+          cp client/package.json /tmp/freellmapi-release/client-package.json
+          cp .env.example /tmp/freellmapi-release/.env.example || true
+
+          cd /tmp/freellmapi-release
+          tar -czf /tmp/freellmapi-release.tar.gz .
+
+      - name: Delete old releases
+        run: |
+          gh release delete prebuilt --yes || true
+          git push origin :refs/tags/prebuilt || true
+
+      - name: Create prebuilt release
+        run: |
+          gh release create prebuilt /tmp/freellmapi-release.tar.gz \
+            --title "Prebuilt Release" \
+            --notes "Auto-built from commit $(git rev-parse --short HEAD)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -4,6 +4,8 @@ set -euo pipefail
 APP_NAME="freellmapi"
 APP_DIR="/opt/freellmapi"
 REPO_URL="https://github.com/zczy-k/freellmapi.git"
+REPO_OWNER="zczy-k"
+REPO_NAME="freellmapi"
 BRANCH="main"
 SERVICE_NAME="freellmapi"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -17,6 +19,8 @@ BACKUP_DIR="/opt/freellmapi-backup"
 DEPLOY_VERSION_FILE="${APP_DIR}/.deploy-version"
 SWAP_FILE="${APP_DIR}.swap"
 SWAP_FLAG="${APP_DIR}/.swap-created-by-deploy"
+PREBUILT_RELEASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/prebuilt/freellmapi-release.tar.gz"
+BUILD_MODE=false
 AUTO_MODE=false
 YES_MODE=false
 CUSTOM_PORT=""
@@ -219,6 +223,46 @@ install_system_deps() {
     log_info "System dependencies installed"
 }
 
+install_system_deps_minimal() {
+    log_step "Installing minimal system dependencies (prebuilt mode)"
+    local pkgs_to_install=()
+
+    for cmd_pkg in "curl:curl" "ca-certificates:ca-certificates"; do
+        local cmd="${cmd_pkg%%:*}"
+        local pkg="${cmd_pkg##*:}"
+        if ! command -v "$cmd" &>/dev/null; then
+            pkgs_to_install+=("$pkg")
+        fi
+    done
+
+    if [[ ${#pkgs_to_install[@]} -eq 0 ]]; then
+        log_info "All minimal dependencies already present"
+        return 0
+    fi
+
+    log_info "Installing missing packages: ${pkgs_to_install[*]}"
+    case "$OS_FAMILY" in
+        debian)
+            apt-get update -qq
+            apt-get install -y -qq "${pkgs_to_install[@]}" > /dev/null 2>&1
+            ;;
+        rhel)
+            if command -v dnf &>/dev/null; then
+                dnf install -y -q "${pkgs_to_install[@]}"
+            else
+                yum install -y -q "${pkgs_to_install[@]}"
+            fi
+            ;;
+        alpine)
+            apk add --quiet "${pkgs_to_install[@]}"
+            ;;
+        *)
+            log_warn "Unsupported OS. Please install manually: ${pkgs_to_install[*]}"
+            ;;
+    esac
+    log_info "Minimal dependencies installed"
+}
+
 install_nodejs() {
     local nvm_node
     nvm_node=$(find_nvm_node_bin) || true
@@ -351,6 +395,54 @@ clone_repo() {
 
     git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR" --quiet
     log_info "Repository cloned"
+}
+
+download_prebuilt() {
+    log_step "Downloading prebuilt release"
+    mkdir -p "$APP_DIR"
+
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    log_info "Downloading from ${PREBUILT_RELEASE_URL}"
+    if ! curl -fsSL -o "$tmp_file" "$PREBUILT_RELEASE_URL" 2>&1; then
+        log_error "Failed to download prebuilt release"
+        log_error "This may mean the GitHub Actions workflow hasn't run yet."
+        log_error "Try again later, or use --build mode to build locally."
+        rm -f "$tmp_file"
+        exit 1
+    fi
+
+    log_info "Extracting..."
+    if ! tar -xzf "$tmp_file" -C "$APP_DIR" 2>&1; then
+        log_error "Failed to extract prebuilt release"
+        rm -f "$tmp_file"
+        exit 1
+    fi
+
+    rm -f "$tmp_file"
+
+    if [[ ! -d "${APP_DIR}/server-dist" ]]; then
+        log_error "Prebuilt release is missing server-dist directory"
+        exit 1
+    fi
+
+    mkdir -p "${APP_DIR}/server"
+    mv "${APP_DIR}/server-dist" "${APP_DIR}/server/dist"
+
+    if [[ -d "${APP_DIR}/client-dist" ]]; then
+        mkdir -p "${APP_DIR}/client"
+        mv "${APP_DIR}/client-dist" "${APP_DIR}/client/dist"
+    fi
+
+    if [[ -f "${APP_DIR}/server-package.json" ]]; then
+        mv "${APP_DIR}/server-package.json" "${APP_DIR}/server/package.json"
+    fi
+    if [[ -f "${APP_DIR}/client-package.json" ]]; then
+        mv "${APP_DIR}/client-package.json" "${APP_DIR}/client/package.json"
+    fi
+
+    log_info "Prebuilt release downloaded and extracted"
 }
 
 install_npm_deps() {
@@ -680,14 +772,25 @@ do_install() {
     local port="${CUSTOM_PORT:-3001}"
     check_port_conflict "$port" || exit 1
 
-    install_system_deps
-    create_user
-    clone_repo
-    install_nodejs
-    setup_swap
-    install_npm_deps
-    build_app
-    prune_dev_deps
+    if [[ "$BUILD_MODE" == "true" ]]; then
+        log_info "Build mode: LOCAL (building on server)"
+        install_system_deps
+        create_user
+        clone_repo
+        install_nodejs
+        setup_swap
+        install_npm_deps
+        build_app
+        prune_dev_deps
+    else
+        log_info "Build mode: PREBUILT (downloading from GitHub Actions)"
+        install_system_deps_minimal
+        create_user
+        download_prebuilt
+        install_nodejs
+        setup_swap
+    fi
+
     create_env_file
     mkdir -p "${DATA_DIR}"
     set_permissions
@@ -751,7 +854,150 @@ do_upgrade() {
         exit 1
     fi
 
-    log_step "Checking for updates"
+    if [[ "$BUILD_MODE" == "true" ]]; then
+        do_upgrade_build "$auto_flag"
+    else
+        do_upgrade_prebuilt "$auto_flag"
+    fi
+}
+
+do_upgrade_prebuilt() {
+    local auto_flag="${1:-false}"
+
+    log_step "Checking for prebuilt updates"
+    write_log "Checking for prebuilt updates"
+
+    local current
+    current=$(cat "$DEPLOY_VERSION_FILE" 2>/dev/null || echo "unknown")
+
+    log_info "Current version: ${current}"
+    log_info "Downloading latest prebuilt release..."
+
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    if ! curl -fsSL -o "$tmp_file" "$PREBUILT_RELEASE_URL" 2>&1; then
+        if [[ "$auto_flag" != "true" ]]; then
+            log_error "Failed to download prebuilt release"
+        fi
+        rm -f "$tmp_file"
+        exit 1
+    fi
+
+    local new_hash
+    new_hash=$(sha256sum "$tmp_file" | cut -d' ' -f1)
+
+    if [[ -f "${APP_DIR}/.release-hash" ]]; then
+        local old_hash
+        old_hash=$(cat "${APP_DIR}/.release-hash")
+        if [[ "$old_hash" == "$new_hash" ]]; then
+            if [[ "$auto_flag" != "true" ]]; then
+                log_info "Already up to date (same release)"
+            fi
+            rm -f "$tmp_file"
+            exit 0
+        fi
+    fi
+
+    if [[ "$auto_flag" != "true" && "$YES_MODE" == "false" ]]; then
+        if ! confirm "New version available. Proceed with upgrade?"; then
+            log_info "Upgrade cancelled"
+            rm -f "$tmp_file"
+            exit 0
+        fi
+    fi
+
+    log_step "Backing up current version"
+    rm -rf "$BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR"
+    cp -a "${APP_DIR}/server" "${BACKUP_DIR}/" 2>/dev/null || true
+    cp -a "${APP_DIR}/client" "${BACKUP_DIR}/" 2>/dev/null || true
+    cp -a "${APP_DIR}/shared" "${BACKUP_DIR}/" 2>/dev/null || true
+    cp -a "${APP_DIR}/node_modules" "${BACKUP_DIR}/" 2>/dev/null || true
+    cp -a "${APP_DIR}/package.json" "${BACKUP_DIR}/" 2>/dev/null || true
+    cp -a "$ENV_FILE" "${BACKUP_DIR}/.env.backup"
+    cp -a "$DEPLOY_VERSION_FILE" "${BACKUP_DIR}/.deploy-version.backup" 2>/dev/null || true
+    log_info "Backup saved to ${BACKUP_DIR}"
+
+    log_step "Upgrading FreeLLMAPI (prebuilt)"
+    write_log "Starting prebuilt upgrade"
+
+    local upgrade_failed=false
+
+    rm -rf "${APP_DIR}/server" "${APP_DIR}/client" "${APP_DIR}/shared" "${APP_DIR}/node_modules"
+
+    if ! tar -xzf "$tmp_file" -C "$APP_DIR" 2>&1; then
+        log_error "Failed to extract prebuilt release"
+        upgrade_failed=true
+    fi
+    rm -f "$tmp_file"
+
+    if [[ "$upgrade_failed" == "false" ]]; then
+        mkdir -p "${APP_DIR}/server"
+        mv "${APP_DIR}/server-dist" "${APP_DIR}/server/dist"
+        if [[ -d "${APP_DIR}/client-dist" ]]; then
+            mkdir -p "${APP_DIR}/client"
+            mv "${APP_DIR}/client-dist" "${APP_DIR}/client/dist"
+        fi
+        if [[ -f "${APP_DIR}/server-package.json" ]]; then
+            mv "${APP_DIR}/server-package.json" "${APP_DIR}/server/package.json"
+        fi
+        if [[ -f "${APP_DIR}/client-package.json" ]]; then
+            mv "${APP_DIR}/client-package.json" "${APP_DIR}/client/package.json"
+        fi
+
+        echo "$new_hash" > "${APP_DIR}/.release-hash"
+
+        set_permissions
+        log_step "Restarting service"
+        systemctl restart "$SERVICE_NAME"
+
+        if health_check; then
+            rm -rf "$BACKUP_DIR"
+            log_info "==========================================="
+            log_info " Upgrade successful! (prebuilt)"
+            log_info "==========================================="
+            write_log "Prebuilt upgrade completed"
+        else
+            upgrade_failed=true
+        fi
+    fi
+
+    if [[ "$upgrade_failed" == "true" ]]; then
+        log_error "Upgrade failed! Rolling back..."
+        write_log "Upgrade failed, rolling back"
+
+        systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+
+        rm -rf "${APP_DIR}/server" "${APP_DIR}/client" "${APP_DIR}/shared" "${APP_DIR}/node_modules"
+        cp -a "${BACKUP_DIR}/server" "${APP_DIR}/server" 2>/dev/null || true
+        cp -a "${BACKUP_DIR}/client" "${APP_DIR}/client" 2>/dev/null || true
+        cp -a "${BACKUP_DIR}/shared" "${APP_DIR}/shared" 2>/dev/null || true
+        cp -a "${BACKUP_DIR}/node_modules" "${APP_DIR}/node_modules" 2>/dev/null || true
+        if [[ -f "${BACKUP_DIR}/.env.backup" ]]; then
+            cp -a "${BACKUP_DIR}/.env.backup" "$ENV_FILE"
+        fi
+
+        set_permissions
+        systemctl start "$SERVICE_NAME"
+
+        sleep 3
+        local port
+        port=$(grep -E '^PORT=' "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || echo "3001")
+        if curl -sf "http://127.0.0.1:${port:-3001}/api/ping" > /dev/null 2>&1; then
+            log_info "Rollback successful, service restored"
+        else
+            log_error "Rollback also failed! Manual intervention required."
+            log_error "Backup is at: ${BACKUP_DIR}"
+        fi
+        exit 1
+    fi
+}
+
+do_upgrade_build() {
+    local auto_flag="${1:-false}"
+
+    log_step "Checking for updates (build mode)"
     write_log "Checking for updates"
 
     cd "$APP_DIR"
@@ -800,7 +1046,7 @@ do_upgrade() {
     cp -a "$DEPLOY_VERSION_FILE" "${BACKUP_DIR}/.deploy-version.backup" 2>/dev/null || true
     log_info "Backup saved to ${BACKUP_DIR}"
 
-    log_step "Upgrading FreeLLMAPI"
+    log_step "Upgrading FreeLLMAPI (build mode)"
     write_log "Starting upgrade: ${current_short} -> ${latest_short}"
 
     local upgrade_failed=false
@@ -827,6 +1073,7 @@ do_upgrade() {
     fi
 
     if [[ "$upgrade_failed" == "false" ]]; then
+        prune_dev_deps || true
         set_permissions
         log_step "Restarting service"
         systemctl restart "$SERVICE_NAME"
@@ -850,18 +1097,11 @@ do_upgrade() {
 
         systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 
-        rm -rf "${APP_DIR}/server"
-        rm -rf "${APP_DIR}/client"
-        rm -rf "${APP_DIR}/shared"
-        rm -rf "${APP_DIR}/node_modules"
-        rm -rf "${APP_DIR}/package-lock.json"
-
+        rm -rf "${APP_DIR}/server" "${APP_DIR}/client" "${APP_DIR}/shared" "${APP_DIR}/node_modules"
         cp -a "${BACKUP_DIR}/server" "${APP_DIR}/server" 2>/dev/null || true
         cp -a "${BACKUP_DIR}/client" "${APP_DIR}/client" 2>/dev/null || true
         cp -a "${BACKUP_DIR}/shared" "${APP_DIR}/shared" 2>/dev/null || true
         cp -a "${BACKUP_DIR}/node_modules" "${APP_DIR}/node_modules" 2>/dev/null || true
-        cp -a "${BACKUP_DIR}/package-lock.json" "${APP_DIR}/package-lock.json" 2>/dev/null || true
-
         if [[ -f "${BACKUP_DIR}/.env.backup" ]]; then
             cp -a "${BACKUP_DIR}/.env.backup" "$ENV_FILE"
         fi
@@ -1121,6 +1361,7 @@ Commands:
 Options:
   -y, --yes        Skip all confirmation prompts
   --auto           Non-interactive mode (for cron)
+  --build          Build locally on server instead of downloading prebuilt
   -p, --port PORT  Set port (default: 3001)
   -h, --help       Show this help
 
@@ -1139,8 +1380,11 @@ Examples:
   # Install with custom port
   $(basename "$0") install -y -p 8080
 
-  # One-line install
+  # One-line install (prebuilt, recommended for low-spec servers)
   curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/${BRANCH}/deploy.sh | sudo bash -s install -y
+
+  # Install with local build (for servers with enough RAM)
+  $(basename "$0") install -y --build
 
   # Upgrade interactively
   $(basename "$0") upgrade
@@ -1173,6 +1417,10 @@ main() {
             --auto)
                 AUTO_MODE=true
                 YES_MODE=true
+                shift
+                ;;
+            --build)
+                BUILD_MODE=true
                 shift
                 ;;
             -p|--port)
