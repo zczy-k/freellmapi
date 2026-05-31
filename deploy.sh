@@ -320,6 +320,9 @@ clone_repo() {
     log_step "Cloning repository"
     if [[ -d "$APP_DIR/.git" ]]; then
         log_info "Repository already exists at ${APP_DIR}"
+        cd "$APP_DIR"
+        git reset --hard HEAD --quiet 2>/dev/null || true
+        git clean -fd --quiet 2>/dev/null || true
         return 0
     fi
 
@@ -343,7 +346,11 @@ install_npm_deps() {
         exit 1
     fi
 
-    $npm_cmd install --omit=dev --no-audit --no-fund > /dev/null 2>&1
+    log_info "Running: ${npm_cmd} install --omit=dev"
+    if ! $npm_cmd install --omit=dev --no-audit --no-fund 2>&1; then
+        log_error "npm install failed (see output above)"
+        exit 1
+    fi
 
     log_info "npm dependencies installed"
 }
@@ -364,7 +371,11 @@ build_app() {
 
     export NODE_OPTIONS="--max-old-space-size=512"
 
-    $npm_cmd run build > /dev/null 2>&1
+    log_info "Running: ${npm_cmd} run build"
+    if ! $npm_cmd run build 2>&1; then
+        log_error "Build failed (see output above)"
+        exit 1
+    fi
 
     log_info "Application built"
 }
@@ -575,6 +586,13 @@ do_install() {
             log_info "Aborted"
             exit 0
         fi
+    fi
+
+    if [[ -d "$APP_DIR" ]] && [[ ! -f "$SERVICE_FILE" ]]; then
+        log_warn "Previous installation found at ${APP_DIR} but service not running (likely failed install)"
+        log_warn "Cleaning up previous installation..."
+        rm -rf "$APP_DIR"
+        rm -rf "$BACKUP_DIR"
     fi
 
     local port="${CUSTOM_PORT:-3001}"
