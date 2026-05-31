@@ -595,6 +595,19 @@ do_install() {
         log_info "  Node.js:    $(get_node_bin)"
         log_info "  Logs:       journalctl -u ${SERVICE_NAME} -f"
         log_info ""
+        log_warn "  IMPORTANT: Make sure port ${port} is open in your firewall!"
+        log_warn ""
+        log_warn "  Firewall commands (choose one):"
+        if command -v ufw &>/dev/null; then
+            log_warn "    ufw allow ${port}/tcp"
+        fi
+        if command -v firewall-cmd &>/dev/null; then
+            log_warn "    firewall-cmd --permanent --add-port=${port}/tcp && firewall-cmd --reload"
+        fi
+        if command -v iptables &>/dev/null; then
+            log_warn "    iptables -A INPUT -p tcp --dport ${port} -j ACCEPT"
+        fi
+        log_info ""
         log_info "  Management commands:"
         log_info "    ${0} status      - Check status"
         log_info "    ${0} logs        - View logs"
@@ -766,16 +779,19 @@ do_uninstall_internal() {
     log_step "Removing log file"
     rm -f "$LOG_FILE"
 
-    log_step "Removing application"
+    local port="3001"
+    if [[ -f "$ENV_FILE" ]]; then
+        port=$(grep -E "^PORT=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || echo "3001")
+        port="${port:-3001}"
+    fi
+
+    log_step "Removing application (including nvm Node.js at ${NVM_DIR})"
     rm -rf "$APP_DIR"
 
     log_step "Removing backup"
     rm -rf "$BACKUP_DIR"
 
     if [[ "$purge" == "true" ]]; then
-        log_step "Removing nvm Node.js installation"
-        rm -rf "${NVM_DIR}"
-
         log_step "Purging data directory"
         rm -rf "$DATA_DIR"
         rm -f "$DEPLOY_VERSION_FILE"
@@ -794,6 +810,17 @@ do_uninstall_internal() {
 
         log_step "Removing user"
         userdel "$APP_NAME" 2>/dev/null || true
+
+        log_warn "Firewall: You may want to close port ${port}:"
+        if command -v ufw &>/dev/null; then
+            log_warn "    ufw deny ${port}/tcp"
+        fi
+        if command -v firewall-cmd &>/dev/null; then
+            log_warn "    firewall-cmd --permanent --remove-port=${port}/tcp && firewall-cmd --reload"
+        fi
+        if command -v iptables &>/dev/null; then
+            log_warn "    iptables -D INPUT -p tcp --dport ${port} -j ACCEPT"
+        fi
     else
         if [[ -f "$SWAP_FLAG" ]]; then
             log_info "Swap file at ${SWAP_FILE} preserved (use purge to remove)"
