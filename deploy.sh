@@ -12,10 +12,12 @@ LOG_FILE="/var/log/${SERVICE_NAME}-deploy.log"
 DATA_DIR="${APP_DIR}/data"
 ENV_FILE="${APP_DIR}/.env"
 NODE_MAJOR=20
+NVM_DIR="${APP_DIR}/.nvm"
+NODE_BIN_DIR="${NVM_DIR}/versions/node/v${NODE_MAJOR}.0.0/bin"
 BACKUP_DIR="/opt/freellmapi-backup"
 DEPLOY_VERSION_FILE="${APP_DIR}/.deploy-version"
-NODE_INSTALL_FLAG="/opt/.freellmapi-node-installed"
-SWAP_FILE="/swapfile"
+SWAP_FILE="${APP_DIR}.swap"
+SWAP_FLAG="${APP_DIR}/.swap-created-by-deploy"
 AUTO_MODE=false
 YES_MODE=false
 CUSTOM_PORT=""
@@ -30,7 +32,7 @@ NC='\033[0m'
 log_info()    { echo -e "${GREEN}[INFO]${NC} $*"; }
 log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $*"; }
-log_step()    { echo -e "${CYAN}==>${NC} ${BOLD}$*${NC}"; }
+log_step()    { echo -e "${CYAN}==>${NC} $*"; }
 log_sub()     { echo -e "    $*"; }
 
 confirm() {
@@ -99,77 +101,152 @@ get_current_version() {
     fi
 }
 
-get_latest_version() {
-    cd "$APP_DIR"
-    git fetch origin "$BRANCH" --quiet 2>/dev/null || true
-    git rev-parse "origin/${BRANCH}" 2>/dev/null || echo "unknown"
-}
-
 write_log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"
 }
 
+check_port_conflict() {
+    local port="${1:-3001}"
+
+    if ! command -v ss &>/dev/null && ! command -v netstat &>/dev/null; then
+        log_warn "Cannot check port availability (ss/netstat not found)"
+        return 0
+    fi
+
+    local listener=""
+    if command -v ss &>/dev/null; then
+        listener=$(ss -tlnp 2>/dev/null | grep -E ":${port}\s" | head -1 || true)
+    elif command -v netstat &>/dev/null; then
+        listener=$(netstat -tlnp 2>/dev/null | grep -E ":${port}\s" | head -1 || true)
+    fi
+
+    if [[ -n "$listener" ]]; then
+        local proc_info
+        proc_info=$(echo "$listener" | awk '{for(i=1;i<=NF;i++) if($i ~ /users/) print $i}')
+        log_error "Port ${port} is already in use!"
+        log_error "  ${listener}"
+        if [[ -n "$proc_info" ]]; then
+            log_error "  Process: ${proc_info}"
+        fi
+        log_error "Please stop the conflicting service or use a different port (-p PORT)."
+        return 1
+    fi
+
+    log_info "Port ${port} is available"
+    return 0
+}
+
+get_node_bin() {
+    if [[ -x "${NODE_BIN_DIR}/node" ]]; then
+        echo "${NODE_BIN_DIR}/node"
+    elif command -v node &>/dev/null; then
+        command -v node
+    else
+        echo ""
+    fi
+}
+
+get_npm_bin() {
+    if [[ -x "${NODE_BIN_DIR}/npm" ]]; then
+        echo "${NODE_BIN_DIR}/npm"
+    elif command -v npm &>/dev/null; then
+        command -v npm
+    else
+        echo ""
+    fi
+}
+
 install_system_deps() {
-    log_step "Installing system dependencies"
+    log_step "Installing system dependencies (only if missing)"
+    local pkgs_to_install=()
+
+    for cmd_pkg in "git:git" "curl:curl" "wget:wget" "python3:python3" "make:make" "g++:g++" "ca-certificates:ca-certificates"; do
+        local cmd="${cmd_pkg%%:*}"
+        local pkg="${cmd_pkg##*:}"
+        if ! command -v "$cmd" &>/dev/null; then
+            pkgs_to_install+=("$pkg")
+        fi
+    done
+
+    if [[ ${#pkgs_to_install[@]} -eq 0 ]]; then
+        log_info "All system dependencies already present"
+        return 0
+    fi
+
+    log_info "Installing missing packages: ${pkgs_to_install[*]}"
     case "$OS_FAMILY" in
         debian)
             apt-get update -qq
-            apt-get install -y -qq git curl wget python3 make g++ ca-certificates gnupg > /dev/null 2>&1
+            apt-get install -y -qq "${pkgs_to_install[@]}" > /dev/null 2>&1
             ;;
         rhel)
             if command -v dnf &>/dev/null; then
-                dnf install -y -q git curl wget python3 make gcc-c++ ca-certificates
+                dnf install -y -q "${pkgs_to_install[@]}"
             else
-                yum install -y -q git curl wget python3 make gcc-c++ ca-certificates
+                yum install -y -q "${pkgs_to_install[@]}"
             fi
             ;;
         alpine)
-            apk add --quiet git curl wget python3 make g++
+            apk add --quiet "${pkgs_to_install[@]}"
             ;;
         *)
-            log_warn "Unsupported OS family: $OS_FAMILY. Please install manually: git, curl, python3, make, g++"
+            log_warn "Unsupported OS. Please install manually: ${pkgs_to_install[*]}"
             ;;
     esac
     log_info "System dependencies installed"
 }
 
 install_nodejs() {
+    if [[ -x "${NODE_BIN_DIR}/node" ]]; then
+        local nvm_node_version
+        nvm_node_version=$("${NODE_BIN_DIR}/node" -v)
+        log_info "Node.js ${nvm_node_version} (nvm) already installed in ${NVM_DIR}"
+        return 0
+    fi
+
     if command -v node &>/dev/null; then
-        local node_version
-        node_version=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-        if [[ "$node_version" -ge "$NODE_MAJOR" ]]; then
-            log_info "Node.js $(node -v) already installed, skipping"
+        local sys_node_version
+        sys_node_version=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+        if [[ "$sys_node_version" -ge "$NODE_MAJOR" ]]; then
+            log_info "System Node.js $(node -v) meets requirements, using it"
+            log_warn "Note: Using system Node.js. If other projects need a different version, consider installing nvm separately."
             return 0
         else
-            log_warn "Node.js $(node -v) found but version too old (need >= ${NODE_MAJOR}), upgrading..."
+            log_warn "System Node.js $(node -v) is too old (need >= ${NODE_MAJOR}), installing via nvm..."
         fi
     fi
 
-    log_step "Installing Node.js ${NODE_MAJOR}"
-    case "$OS_FAMILY" in
-        debian)
-            curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - > /dev/null 2>&1
-            apt-get install -y -qq nodejs > /dev/null 2>&1
-            ;;
-        rhel)
-            curl -fsSL https://rpm.nodesource.com/setup_${NODE_MAJOR}.x | bash - > /dev/null 2>&1
-            if command -v dnf &>/dev/null; then
-                dnf install -y -q nodejs
-            else
-                yum install -y -q nodejs
-            fi
-            ;;
-        alpine)
-            apk add --quiet nodejs npm
-            ;;
-        *)
-            log_error "Cannot install Node.js automatically on $OS_FAMILY. Please install Node.js ${NODE_MAJOR}+ manually."
-            exit 1
-            ;;
-    esac
+    log_step "Installing Node.js ${NODE_MAJOR} via nvm (isolated, no system-wide impact)"
 
-    touch "$NODE_INSTALL_FLAG"
-    log_info "Node.js $(node -v) installed"
+    mkdir -p "${NVM_DIR}"
+
+    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | \
+        NVM_SOURCE="" HOME="${APP_DIR}" PROFILE="/dev/null" bash > /dev/null 2>&1
+
+    export NVM_DIR="${NVM_DIR}"
+    if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
+        . "${NVM_DIR}/nvm.sh"
+    else
+        log_error "nvm installation failed"
+        exit 1
+    fi
+
+    nvm install "${NODE_MAJOR}" > /dev/null 2>&1
+    nvm alias default "${NODE_MAJOR}" > /dev/null 2>&1
+
+    if [[ -x "${NODE_BIN_DIR}/node" ]]; then
+        log_info "Node.js $("${NODE_BIN_DIR}/node" -v) installed (isolated at ${NVM_DIR})"
+    else
+        local actual_node
+        actual_node=$(nvm which "${NODE_MAJOR}" 2>/dev/null || true)
+        if [[ -x "$actual_node" ]]; then
+            NODE_BIN_DIR=$(dirname "$actual_node")
+            log_info "Node.js installed at ${actual_node}"
+        else
+            log_error "Node.js installation via nvm failed"
+            exit 1
+        fi
+    fi
 }
 
 setup_swap() {
@@ -189,12 +266,12 @@ setup_swap() {
     fi
 
     log_step "Setting up swap (recommended for ${total_mem}MB RAM)"
-    if ! confirm "Add 1GB swap file?"; then
+    if ! confirm "Add 1GB swap file at ${SWAP_FILE}?"; then
         return 0
     fi
 
     if [[ -f "$SWAP_FILE" ]]; then
-        log_info "Swap file already exists, enabling..."
+        log_info "Swap file already exists at ${SWAP_FILE}, enabling..."
         swapon "$SWAP_FILE" 2>/dev/null || true
         return 0
     fi
@@ -208,12 +285,8 @@ setup_swap() {
         echo "${SWAP_FILE} none swap sw 0 0" >> /etc/fstab
     fi
 
-    sysctl vm.swappiness=10 > /dev/null 2>&1 || true
-    if ! grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
-        echo "vm.swappiness=10" >> /etc/sysctl.conf
-    fi
-
-    log_info "Swap configured (1GB)"
+    touch "$SWAP_FLAG"
+    log_info "Swap configured (1GB at ${SWAP_FILE})"
 }
 
 create_user() {
@@ -228,9 +301,14 @@ create_user() {
 
 clone_repo() {
     log_step "Cloning repository"
-    if [[ -d "$APP_DIR" ]]; then
-        log_warn "$APP_DIR already exists"
+    if [[ -d "$APP_DIR/.git" ]]; then
+        log_info "Repository already exists at ${APP_DIR}"
         return 0
+    fi
+
+    if [[ -d "$APP_DIR" ]]; then
+        log_warn "${APP_DIR} exists but is not a git repo, backing up..."
+        mv "$APP_DIR" "${APP_DIR}.old.$$"
     fi
 
     git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR" --quiet
@@ -241,13 +319,14 @@ install_npm_deps() {
     log_step "Installing npm dependencies"
     cd "$APP_DIR"
 
-    npm install --omit=dev --no-audit --no-fund > /dev/null 2>&1
-
-    if [[ -d "server" ]] && [[ -f "server/package.json" ]]; then
-        cd server
-        npm install --omit=dev --no-audit --no-fund > /dev/null 2>&1 || true
-        cd "$APP_DIR"
+    local npm_cmd
+    npm_cmd=$(get_npm_bin)
+    if [[ -z "$npm_cmd" ]]; then
+        log_error "npm not found"
+        exit 1
     fi
+
+    $npm_cmd install --omit=dev --no-audit --no-fund > /dev/null 2>&1
 
     log_info "npm dependencies installed"
 }
@@ -256,9 +335,19 @@ build_app() {
     log_step "Building application"
     cd "$APP_DIR"
 
+    local node_cmd
+    node_cmd=$(get_node_bin)
+    if [[ -z "$node_cmd" ]]; then
+        log_error "node not found"
+        exit 1
+    fi
+
+    local npm_cmd
+    npm_cmd=$(get_npm_bin)
+
     export NODE_OPTIONS="--max-old-space-size=512"
 
-    npm run build > /dev/null 2>&1
+    $npm_cmd run build > /dev/null 2>&1
 
     log_info "Application built"
 }
@@ -272,8 +361,15 @@ generate_encryption_key() {
         fi
     fi
 
+    local node_cmd
+    node_cmd=$(get_node_bin)
+    if [[ -z "$node_cmd" ]]; then
+        log_error "node not found for key generation"
+        exit 1
+    fi
+
     local key
-    key=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+    key=$($node_cmd -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
 
     if [[ -f "$ENV_FILE" ]]; then
         sed -i "s/^ENCRYPTION_KEY=.*/ENCRYPTION_KEY=${key}/" "$ENV_FILE"
@@ -303,6 +399,8 @@ create_env_file() {
         port="${input_port:-$port}"
     fi
 
+    check_port_conflict "$port" || exit 1
+
     cat > "$ENV_FILE" << EOF
 ENCRYPTION_KEY=your-64-char-hex-key-here
 PORT=${port}
@@ -321,10 +419,21 @@ create_systemd_service() {
         port="${port:-3001}"
     fi
 
+    local node_path
+    node_path=$(get_node_bin)
+    if [[ -z "$node_path" ]]; then
+        log_error "Cannot find node binary for systemd service"
+        exit 1
+    fi
+
+    local node_dir
+    node_dir=$(dirname "$node_path")
+
     cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=FreeLLMAPI - Free LLM API Proxy
 After=network.target
+Conflicts=
 
 [Service]
 Type=simple
@@ -333,16 +442,37 @@ Group=${APP_NAME}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${ENV_FILE}
 Environment=NODE_ENV=production
-ExecStart=$(command -v node) ${APP_DIR}/server/dist/index.js
+Environment=PATH=${node_dir}:/usr/local/bin:/usr/bin:/bin
+ExecStart=${node_path} ${APP_DIR}/server/dist/index.js
 Restart=on-failure
 RestartSec=5
+
 MemoryMax=512M
+MemoryHigh=400M
+CPUQuota=50%
 
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
+PrivateTmp=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+PrivateDevices=true
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+
 ReadWritePaths=${APP_DIR}/data ${APP_DIR}/.env
-ReadOnlyPaths=${APP_DIR}/server ${APP_DIR}/client ${APP_DIR}/shared ${APP_DIR}/node_modules
+ReadOnlyPaths=${APP_DIR}/server ${APP_DIR}/client ${APP_DIR}/shared ${APP_DIR}/node_modules ${NVM_DIR}
+
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target
@@ -350,7 +480,7 @@ EOF
 
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
-    log_info "systemd service created and enabled"
+    log_info "systemd service created (sandboxed, isolated)"
 }
 
 setup_auto_upgrade() {
@@ -382,6 +512,9 @@ set_permissions() {
     chown "${APP_NAME}:${APP_NAME}" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
     chmod 755 "${APP_DIR}/server/dist/index.js" 2>/dev/null || true
+    if [[ -d "$NVM_DIR" ]]; then
+        chown -R root:root "$NVM_DIR"
+    fi
 }
 
 health_check() {
@@ -427,6 +560,9 @@ do_install() {
         fi
     fi
 
+    local port="${CUSTOM_PORT:-3001}"
+    check_port_conflict "$port" || exit 1
+
     install_system_deps
     install_nodejs
     setup_swap
@@ -445,7 +581,6 @@ do_install() {
     systemctl start "$SERVICE_NAME"
 
     if health_check; then
-        local port
         port=$(grep -E "^PORT=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || echo "3001")
         port="${port:-3001}"
         echo ""
@@ -457,6 +592,7 @@ do_install() {
         log_info "  API:        http://<your-ip>:${port}/v1/chat/completions"
         log_info "  Config:     ${ENV_FILE}"
         log_info "  Data:       ${DATA_DIR}"
+        log_info "  Node.js:    $(get_node_bin)"
         log_info "  Logs:       journalctl -u ${SERVICE_NAME} -f"
         log_info ""
         log_info "  Management commands:"
@@ -522,8 +658,15 @@ do_upgrade() {
 
     log_step "Backing up current version"
     rm -rf "$BACKUP_DIR"
-    cp -a "$APP_DIR" "$BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR"
+    cp -a "${APP_DIR}/server" "${BACKUP_DIR}/" 2>/dev/null || true
+    cp -a "${APP_DIR}/client" "${BACKUP_DIR}/" 2>/dev/null || true
+    cp -a "${APP_DIR}/shared" "${BACKUP_DIR}/" 2>/dev/null || true
+    cp -a "${APP_DIR}/node_modules" "${BACKUP_DIR}/" 2>/dev/null || true
+    cp -a "${APP_DIR}/package-lock.json" "${BACKUP_DIR}/" 2>/dev/null || true
+    cp -a "${APP_DIR}/package.json" "${BACKUP_DIR}/" 2>/dev/null || true
     cp -a "$ENV_FILE" "${BACKUP_DIR}/.env.backup"
+    cp -a "$DEPLOY_VERSION_FILE" "${BACKUP_DIR}/.deploy-version.backup" 2>/dev/null || true
     log_info "Backup saved to ${BACKUP_DIR}"
 
     log_step "Upgrading FreeLLMAPI"
@@ -630,43 +773,34 @@ do_uninstall_internal() {
     rm -rf "$BACKUP_DIR"
 
     if [[ "$purge" == "true" ]]; then
+        log_step "Removing nvm Node.js installation"
+        rm -rf "${NVM_DIR}"
+
         log_step "Purging data directory"
         rm -rf "$DATA_DIR"
         rm -f "$DEPLOY_VERSION_FILE"
-    fi
 
-    if [[ -f "$NODE_INSTALL_FLAG" ]]; then
-        log_step "Node.js was installed by this script"
-        if [[ "$purge" == "true" ]] || confirm "Remove Node.js (installed by deploy script)?"; then
-            case "$OS_FAMILY" in
-                debian)
-                    apt-get remove -y -qq nodejs > /dev/null 2>&1 || true
-                    rm -f /etc/apt/sources.list.d/nodesource.list
-                    ;;
-                rhel)
-                    if command -v dnf &>/dev/null; then
-                        dnf remove -y -q nodejs 2>/dev/null || true
-                    else
-                        yum remove -y -q nodejs 2>/dev/null || true
-                    fi
-                    rm -f /etc/yum.repos.d/nodesource*.repo
-                    ;;
-            esac
-            rm -f "$NODE_INSTALL_FLAG"
-            log_info "Node.js removed"
+        if [[ -f "$SWAP_FLAG" ]]; then
+            log_step "Removing swap (created by this script)"
+            if [[ -f "$SWAP_FILE" ]] && swapon --show | grep -q "$SWAP_FILE"; then
+                swapoff "$SWAP_FILE" 2>/dev/null || true
+            fi
+            rm -f "$SWAP_FILE"
+            sed -i "\|${SWAP_FILE}|d" /etc/fstab 2>/dev/null || true
+            rm -f "$SWAP_FLAG"
+        else
+            log_info "Swap was not created by this script, skipping"
         fi
-    fi
-
-    if [[ "$purge" == "true" ]]; then
-        log_step "Removing swap (if created by this script)"
-        if [[ -f "$SWAP_FILE" ]] && swapon --show | grep -q "$SWAP_FILE"; then
-            swapoff "$SWAP_FILE" 2>/dev/null || true
-        fi
-        rm -f "$SWAP_FILE"
-        sed -i "\|${SWAP_FILE}|d" /etc/fstab 2>/dev/null || true
 
         log_step "Removing user"
         userdel "$APP_NAME" 2>/dev/null || true
+    else
+        if [[ -f "$SWAP_FLAG" ]]; then
+            log_info "Swap file at ${SWAP_FILE} preserved (use purge to remove)"
+        fi
+        if [[ -d "$DATA_DIR" ]]; then
+            log_info "Data directory at ${DATA_DIR} preserved"
+        fi
     fi
 }
 
@@ -683,8 +817,8 @@ do_uninstall() {
     log_warn "This will remove FreeLLMAPI from your system."
     echo ""
     echo "  Options:"
-    echo "    1) Remove application only (keep data and .env)"
-    echo "    2) Remove everything including data, .env, swap, user"
+    echo "    1) Remove application only (keep data, .env, swap)"
+    echo "    2) Remove everything including data, .env, swap, user, nvm Node.js"
     echo "    3) Cancel"
     echo ""
 
@@ -727,11 +861,19 @@ do_status() {
     port=$(grep -E "^PORT=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || echo "3001")
     port="${port:-3001}"
 
+    local node_path
+    node_path=$(get_node_bin)
+    local node_version="N/A"
+    if [[ -n "$node_path" ]]; then
+        node_version=$("$node_path" -v 2>/dev/null || echo "N/A")
+    fi
+
     echo "  Install dir:   ${APP_DIR}"
     echo "  Version:       $(get_current_version | head -c 12)"
     echo "  Config:        ${ENV_FILE}"
     echo "  Data dir:      ${DATA_DIR}"
     echo "  Port:          ${port}"
+    echo "  Node.js:       ${node_version} (${node_path:-N/A})"
     echo "  Service:       $(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo 'unknown')"
     echo "  Auto-upgrade:  $([ -f "$CRON_FILE" ] && echo 'enabled' || echo 'disabled')"
     echo "  Swap:          $(free -m | awk '/^Swap:/{print $2}')MB"
@@ -834,6 +976,14 @@ Options:
   -p, --port PORT  Set port (default: 3001)
   -h, --help       Show this help
 
+Isolation features:
+  - Node.js installed via nvm (isolated, no system-wide impact)
+  - Dedicated system user (freellmapi)
+  - systemd sandbox (no new privs, private /tmp, read-only filesystems)
+  - Memory limit 512MB, CPU quota 50%
+  - Port conflict detection before install
+  - Project-specific swap file (won't touch existing swap)
+
 Examples:
   # Fresh install with defaults
   $(basename "$0") install -y
@@ -841,11 +991,11 @@ Examples:
   # Install with custom port
   $(basename "$0") install -y -p 8080
 
-  # Upgrade interactively
-  $(basename "$0") upgrade
-
   # One-line install
   curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/${BRANCH}/deploy.sh | sudo bash -s install -y
+
+  # Upgrade interactively
+  $(basename "$0") upgrade
 
   # Complete removal including data
   $(basename "$0") uninstall -y
