@@ -599,10 +599,10 @@ do_install() {
     check_port_conflict "$port" || exit 1
 
     install_system_deps
-    install_nodejs
-    setup_swap
     create_user
     clone_repo
+    install_nodejs
+    setup_swap
     install_npm_deps
     build_app
     create_env_file
