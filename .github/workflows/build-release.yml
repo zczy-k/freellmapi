@@ -7,6 +7,7 @@ on:
       - 'DEPLOY.md'
       - 'deploy.sh'
       - '.github/workflows/ci.yml'
+      - '.github/workflows/sync-upstream.yml'
       - 'repo-assets/**'
       - 'LICENSE'
 
