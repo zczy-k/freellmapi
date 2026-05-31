@@ -115,7 +115,7 @@ sudo ./deploy.sh install -y -p 8080
 [INFO]   API:        http://<your-ip>:3001/v1/chat/completions
 [INFO]   Config:     /opt/freellmapi/.env
 [INFO]   Data:       /opt/freellmapi/data
-[INFO]   Node.js:    /opt/freellmapi/.nvm/versions/node/v20.x.x/bin/node
+[INFO]   Node.js:    /opt/freellmapi-nvm/versions/node/v20.x.x/bin/node
 [INFO]   Logs:       journalctl -u freellmapi -f
 [INFO]
 [WARN]   IMPORTANT: Make sure port 3001 is open in your firewall!
@@ -244,7 +244,7 @@ sudo ./deploy.sh status
   Config:        /opt/freellmapi/.env
   Data dir:      /opt/freellmapi/data
   Port:          3001
-  Node.js:       v20.x.x (/opt/freellmapi/.nvm/.../node)
+  Node.js:       v20.x.x (/opt/freellmapi-nvm/.../node)
   Service:       active
   Auto-upgrade:  enabled
   Swap:          1024MB
@@ -310,7 +310,7 @@ sudo ./deploy.sh restart
 
 | 隔离项 | 实现方式 |
 |---|---|
-| **Node.js** | 通过 nvm 安装到 `/opt/freellmapi/.nvm`，不碰系统 Node.js |
+| **Node.js** | 通过 nvm 安装到 `/opt/freellmapi-nvm`，不碰系统 Node.js |
 | **系统用户** | 专用用户 `freellmapi`，无 shell 登录权限 |
 | **文件系统** | systemd `ProtectSystem=strict`，只允许写入 `data/` 和 `.env` |
 | **临时文件** | systemd `PrivateTmp=true`，独立 /tmp 命名空间 |
@@ -330,7 +330,7 @@ sudo ./deploy.sh restart
 | `/opt/freellmapi/` | 应用根目录 |
 | `/opt/freellmapi/.env` | 环境变量配置（含 ENCRYPTION_KEY 和 PORT） |
 | `/opt/freellmapi/data/` | SQLite 数据库目录 |
-| `/opt/freellmapi/.nvm/` | nvm 安装的 Node.js |
+| `/opt/freellmapi-nvm/` | nvm 安装的 Node.js（独立于应用目录） |
 | `/opt/freellmapi/.deploy-version` | 当前部署版本号 |
 | `/opt/freellmapi.swap` | Swap 文件（如创建） |
 | `/opt/freellmapi/.swap-created-by-deploy` | Swap 标记文件 |
@@ -364,7 +364,7 @@ sudo ./deploy.sh restart
 1. 查看日志：`journalctl -u freellmapi -n 50`
 2. 检查 `.env` 中 `ENCRYPTION_KEY` 是否正确
 3. 检查端口是否被防火墙拦截：`curl http://127.0.0.1:3001/api/ping`
-4. 检查 Node.js 是否正常：`/opt/freellmapi/.nvm/versions/node/v20.x.x/bin/node -v`
+4. 检查 Node.js 是否正常：`/opt/freellmapi-nvm/versions/node/v20.x.x/bin/node -v`
 
 ### 内存不足（OOM）
 

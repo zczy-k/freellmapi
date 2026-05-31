@@ -12,7 +12,7 @@ LOG_FILE="/var/log/${SERVICE_NAME}-deploy.log"
 DATA_DIR="${APP_DIR}/data"
 ENV_FILE="${APP_DIR}/.env"
 NODE_MAJOR=20
-NVM_DIR="${APP_DIR}/.nvm"
+NVM_DIR="/opt/freellmapi-nvm"
 BACKUP_DIR="/opt/freellmapi-backup"
 DEPLOY_VERSION_FILE="${APP_DIR}/.deploy-version"
 SWAP_FILE="${APP_DIR}.swap"
@@ -244,7 +244,7 @@ install_nodejs() {
     mkdir -p "${NVM_DIR}"
 
     curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | \
-        NVM_SOURCE="" HOME="${APP_DIR}" PROFILE="/dev/null" bash > /dev/null 2>&1
+        NVM_SOURCE="" HOME="${NVM_DIR}" PROFILE="/dev/null" bash > /dev/null 2>&1
 
     export NVM_DIR="${NVM_DIR}"
     if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
@@ -592,6 +592,7 @@ do_install() {
         log_warn "Previous installation found at ${APP_DIR} but service not running (likely failed install)"
         log_warn "Cleaning up previous installation..."
         rm -rf "$APP_DIR"
+        rm -rf "$NVM_DIR"
         rm -rf "$BACKUP_DIR"
     fi
 
@@ -820,8 +821,11 @@ do_uninstall_internal() {
         port="${port:-3001}"
     fi
 
-    log_step "Removing application (including nvm Node.js at ${NVM_DIR})"
+    log_step "Removing application"
     rm -rf "$APP_DIR"
+
+    log_step "Removing nvm Node.js at ${NVM_DIR}"
+    rm -rf "$NVM_DIR"
 
     log_step "Removing backup"
     rm -rf "$BACKUP_DIR"
