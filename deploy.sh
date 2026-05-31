@@ -587,6 +587,50 @@ save_version() {
     git rev-parse HEAD > "$DEPLOY_VERSION_FILE" 2>/dev/null || echo "unknown" > "$DEPLOY_VERSION_FILE"
 }
 
+cleanup_residual() {
+    local found_residual=false
+
+    if [[ -d "$APP_DIR" ]] || [[ -d "$NVM_DIR" ]] || [[ -d "$BACKUP_DIR" ]] || \
+       [[ -f "$SERVICE_FILE" ]] || [[ -f "$CRON_FILE" ]] || [[ -f "$LOG_FILE" ]] || \
+       [[ -f "$DEPLOY_VERSION_FILE" ]] || [[ -f "$SWAP_FLAG" ]] || \
+       id "$APP_NAME" &>/dev/null; then
+        found_residual=true
+    fi
+
+    if [[ "$found_residual" == "false" ]]; then
+        return 0
+    fi
+
+    log_step "Cleaning up residual files from previous installation"
+    write_log "Cleaning up residual files"
+
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+
+    rm -rf "$APP_DIR"
+    rm -rf "$NVM_DIR"
+    rm -rf "$BACKUP_DIR"
+    rm -f "$SERVICE_FILE"
+    rm -f "$CRON_FILE"
+    rm -f "$LOG_FILE"
+    rm -f "$DEPLOY_VERSION_FILE"
+    rm -f "$SWAP_FLAG"
+
+    if [[ -f "$SWAP_FILE" ]] && swapon --show 2>/dev/null | grep -q "$SWAP_FILE"; then
+        swapoff "$SWAP_FILE" 2>/dev/null || true
+    fi
+    rm -f "$SWAP_FILE"
+    sed -i "\|${SWAP_FILE}|d" /etc/fstab 2>/dev/null || true
+
+    systemctl daemon-reload 2>/dev/null || true
+
+    if id "$APP_NAME" &>/dev/null; then
+        userdel "$APP_NAME" 2>/dev/null || true
+    fi
+
+    log_info "Residual files cleaned up"
+}
+
 do_install() {
     log_step "Installing FreeLLMAPI"
     write_log "Starting installation"
@@ -595,8 +639,8 @@ do_install() {
     detect_os
 
     if is_installed; then
-        log_warn "FreeLLMAPI is already installed at ${APP_DIR}"
-        if confirm "Reinstall?"; then
+        log_warn "FreeLLMAPI is already installed and running"
+        if [[ "$YES_MODE" == "true" ]] || confirm "Reinstall?"; then
             do_uninstall_internal false
         else
             log_info "Aborted"
@@ -604,13 +648,7 @@ do_install() {
         fi
     fi
 
-    if [[ -d "$APP_DIR" ]] && [[ ! -f "$SERVICE_FILE" ]]; then
-        log_warn "Previous installation found at ${APP_DIR} but service not running (likely failed install)"
-        log_warn "Cleaning up previous installation..."
-        rm -rf "$APP_DIR"
-        rm -rf "$NVM_DIR"
-        rm -rf "$BACKUP_DIR"
-    fi
+    cleanup_residual
 
     local port="${CUSTOM_PORT:-3001}"
     check_port_conflict "$port" || exit 1
