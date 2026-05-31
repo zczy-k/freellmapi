@@ -243,18 +243,34 @@ install_nodejs() {
 
     mkdir -p "${NVM_DIR}"
 
-    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | \
-        NVM_SOURCE="" HOME="${NVM_DIR}" PROFILE="/dev/null" bash > /dev/null 2>&1
-
     export NVM_DIR="${NVM_DIR}"
-    if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
-        . "${NVM_DIR}/nvm.sh"
-    else
-        log_error "nvm installation failed"
+    if ! curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | \
+        NVM_DIR="${NVM_DIR}" NVM_SOURCE="" PROFILE="/dev/null" bash 2>&1; then
+        log_error "nvm install script failed"
         exit 1
     fi
 
-    nvm install "${NODE_MAJOR}" > /dev/null 2>&1
+    if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
+        . "${NVM_DIR}/nvm.sh"
+    else
+        log_error "nvm.sh not found at ${NVM_DIR}/nvm.sh"
+        log_error "Checking alternative location ${NVM_DIR}/.nvm/nvm.sh..."
+        if [[ -s "${NVM_DIR}/.nvm/nvm.sh" ]]; then
+            NVM_DIR="${NVM_DIR}/.nvm"
+            export NVM_DIR
+            . "${NVM_DIR}/nvm.sh"
+            log_warn "nvm installed to ${NVM_DIR} (nested .nvm), adjusting NVM_DIR"
+        else
+            log_error "nvm installation failed completely"
+            exit 1
+        fi
+    fi
+
+    log_info "Installing Node.js ${NODE_MAJOR} via nvm..."
+    if ! nvm install "${NODE_MAJOR}" 2>&1; then
+        log_error "nvm install ${NODE_MAJOR} failed"
+        exit 1
+    fi
     nvm alias default "${NODE_MAJOR}" > /dev/null 2>&1
 
     nvm_node=$(find_nvm_node_bin) || true
