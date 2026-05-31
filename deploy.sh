@@ -13,7 +13,6 @@ DATA_DIR="${APP_DIR}/data"
 ENV_FILE="${APP_DIR}/.env"
 NODE_MAJOR=20
 NVM_DIR="${APP_DIR}/.nvm"
-NODE_BIN_DIR="${NVM_DIR}/versions/node/v${NODE_MAJOR}.0.0/bin"
 BACKUP_DIR="/opt/freellmapi-backup"
 DEPLOY_VERSION_FILE="${APP_DIR}/.deploy-version"
 SWAP_FILE="${APP_DIR}.swap"
@@ -136,24 +135,46 @@ check_port_conflict() {
     return 0
 }
 
-get_node_bin() {
-    if [[ -x "${NODE_BIN_DIR}/node" ]]; then
-        echo "${NODE_BIN_DIR}/node"
-    elif command -v node &>/dev/null; then
-        command -v node
-    else
-        echo ""
+find_nvm_node_bin() {
+    local found
+    found=$(find "${NVM_DIR}/versions/node" -name node -path "*/bin/node" 2>/dev/null | head -1 || true)
+    if [[ -n "$found" && -x "$found" ]]; then
+        echo "$found"
+        return 0
     fi
+    return 1
+}
+
+find_nvm_npm_bin() {
+    local found
+    found=$(find "${NVM_DIR}/versions/node" -name npm -path "*/bin/npm" 2>/dev/null | head -1 || true)
+    if [[ -n "$found" && -x "$found" ]]; then
+        echo "$found"
+        return 0
+    fi
+    return 1
+}
+
+get_node_bin() {
+    local nvm_node
+    nvm_node=$(find_nvm_node_bin) && { echo "$nvm_node"; return 0; }
+    if command -v node &>/dev/null; then
+        command -v node
+        return 0
+    fi
+    echo ""
+    return 1
 }
 
 get_npm_bin() {
-    if [[ -x "${NODE_BIN_DIR}/npm" ]]; then
-        echo "${NODE_BIN_DIR}/npm"
-    elif command -v npm &>/dev/null; then
+    local nvm_npm
+    nvm_npm=$(find_nvm_npm_bin) && { echo "$nvm_npm"; return 0; }
+    if command -v npm &>/dev/null; then
         command -v npm
-    else
-        echo ""
+        return 0
     fi
+    echo ""
+    return 1
 }
 
 install_system_deps() {
@@ -197,9 +218,11 @@ install_system_deps() {
 }
 
 install_nodejs() {
-    if [[ -x "${NODE_BIN_DIR}/node" ]]; then
+    local nvm_node
+    nvm_node=$(find_nvm_node_bin) || true
+    if [[ -n "$nvm_node" ]]; then
         local nvm_node_version
-        nvm_node_version=$("${NODE_BIN_DIR}/node" -v)
+        nvm_node_version=$("$nvm_node" -v)
         log_info "Node.js ${nvm_node_version} (nvm) already installed in ${NVM_DIR}"
         return 0
     fi
@@ -234,18 +257,12 @@ install_nodejs() {
     nvm install "${NODE_MAJOR}" > /dev/null 2>&1
     nvm alias default "${NODE_MAJOR}" > /dev/null 2>&1
 
-    if [[ -x "${NODE_BIN_DIR}/node" ]]; then
-        log_info "Node.js $("${NODE_BIN_DIR}/node" -v) installed (isolated at ${NVM_DIR})"
+    nvm_node=$(find_nvm_node_bin) || true
+    if [[ -n "$nvm_node" ]]; then
+        log_info "Node.js $("${nvm_node}" -v) installed (isolated at ${NVM_DIR})"
     else
-        local actual_node
-        actual_node=$(nvm which "${NODE_MAJOR}" 2>/dev/null || true)
-        if [[ -x "$actual_node" ]]; then
-            NODE_BIN_DIR=$(dirname "$actual_node")
-            log_info "Node.js installed at ${actual_node}"
-        else
-            log_error "Node.js installation via nvm failed"
-            exit 1
-        fi
+        log_error "Node.js installation via nvm failed"
+        exit 1
     fi
 }
 
