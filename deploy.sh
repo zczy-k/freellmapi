@@ -146,10 +146,12 @@ find_nvm_node_bin() {
 }
 
 find_nvm_npm_bin() {
-    local found
-    found=$(find "${NVM_DIR}/versions/node" -name npm -path "*/bin/npm" 2>/dev/null | head -1 || true)
-    if [[ -n "$found" && -x "$found" ]]; then
-        echo "$found"
+    local node_bin
+    node_bin=$(find_nvm_node_bin) || return 1
+    local npm_path
+    npm_path="$(dirname "$node_bin")/npm"
+    if [[ -x "$npm_path" ]]; then
+        echo "$npm_path"
         return 0
     fi
     return 1
@@ -362,6 +364,10 @@ install_npm_deps() {
         exit 1
     fi
 
+    local node_dir
+    node_dir=$(dirname "$(get_node_bin)")
+    export PATH="${node_dir}:${PATH}"
+
     log_info "Running: ${npm_cmd} install --omit=dev"
     if ! $npm_cmd install --omit=dev --no-audit --no-fund 2>&1; then
         log_error "npm install failed (see output above)"
@@ -385,6 +391,9 @@ build_app() {
     local npm_cmd
     npm_cmd=$(get_npm_bin)
 
+    local node_dir
+    node_dir=$(dirname "$node_cmd")
+    export PATH="${node_dir}:${PATH}"
     export NODE_OPTIONS="--max-old-space-size=512"
 
     log_info "Running: ${npm_cmd} run build"
