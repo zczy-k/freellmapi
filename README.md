@@ -94,7 +94,6 @@ The scope is deliberately narrow. If a feature isn't on this list and isn't belo
 - **Embeddings** (`/v1/embeddings`)
 - **Image generation** (`/v1/images/*`)
 - **Audio / speech** (`/v1/audio/*`)
-- **Vision / multimodal inputs** — message content is text-only
 - **Legacy completions** (`/v1/completions`) — only the chat endpoint is implemented
 - **Moderation** (`/v1/moderations`)
 - **`n > 1`** (multiple completions per request)
@@ -264,6 +263,26 @@ final = client.chat.completions.create(
 )
 print(final.choices[0].message.content)
 ```
+
+**Vision / image input**
+
+Send images with the standard OpenAI `image_url` content blocks (base64 `data:` URLs or `http(s)` URLs). When a request contains an image, the router restricts itself to **vision-capable models** and ignores text-only ones. Vision models are tagged with a **Vision** badge on the Fallback Chain page; the current set includes Gemini (2.5 / 3.x), Llama 4 Scout/Maverick (Groq, NVIDIA, SambaNova), and GitHub's GPT-4o / GPT-4.1.
+
+```python
+resp = client.chat.completions.create(
+    model="auto",  # auto-routes to a vision model
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,<...>"}},
+        ],
+    }],
+)
+print(resp.choices[0].message.content)
+```
+
+If no vision-capable model is enabled in your Fallback Chain, an image request returns a clear `422` (`code: "no_vision_model"`) rather than silently dropping the image. (Image input on `/v1/responses` isn't supported yet — use `/v1/chat/completions`.)
 
 Works with `stream=True` as well — you'll get `delta.tool_calls` chunks followed by a `finish_reason: "tool_calls"` close. Under the hood, OpenAI-compatible providers (Groq, Cerebras, SambaNova, Mistral, OpenRouter, GitHub Models, HuggingFace, Cloudflare, Cohere compat) get the request passed through; Gemini requests get translated into Google's `functionDeclarations` / `functionResponse` shape and the response is translated back.
 

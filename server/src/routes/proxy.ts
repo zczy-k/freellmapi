@@ -3,10 +3,10 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
-import { routeRequest, recordRateLimitHit, recordSuccess, type RouteResult } from '../services/router.js';
+import { routeRequest, recordRateLimitHit, recordSuccess, hasEnabledVisionModel, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown, getNextCooldownDuration } from '../services/ratelimit.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
-import { contentToString } from '../lib/content.js';
+import { contentToString, messageHasImage } from '../lib/content.js';
 
 export const proxyRouter = Router();
 
@@ -312,7 +312,27 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     const text = contentToString(m.content);
     return sum + Math.ceil(text.length / 4);
   }, 0);
-  const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
+
+  // Image requests must route to a vision-capable model. Reject up front with a
+  // clear message when none is enabled, rather than silently dropping the image
+  // or surfacing the generic "all models exhausted" error (#118, #125). Add a
+  // rough per-image token cost so budget routing isn't skewed by content the
+  // heuristic above (text-only) can't see.
+  const hasImage = messageHasImage(messages);
+  if (hasImage && !hasEnabledVisionModel()) {
+    res.status(422).json({
+      error: {
+        message: 'This request includes an image, but no vision-capable model is enabled. Enable a vision model (e.g. Gemini 2.5 Flash, Llama 4 Scout) in the Fallback Chain.',
+        type: 'invalid_request_error',
+        code: 'no_vision_model',
+      },
+    });
+    return;
+  }
+  const IMAGE_TOKEN_ESTIMATE = 1000;
+  const imageCount = messages.reduce((n, m) =>
+    n + (Array.isArray(m.content) ? m.content.filter(b => (b as { type?: string })?.type === 'image_url' || (b as { type?: string })?.type === 'image').length : 0), 0);
+  const estimatedTotal = estimatedInputTokens + imageCount * IMAGE_TOKEN_ESTIMATE + (max_tokens ?? 1000);
 
   // Explicit `model` field pins routing. If the catalog has no enabled row
   // matching the requested id, return 400 — silently auto-routing to a
@@ -350,7 +370,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
+      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, hasImage);
     } catch (err: any) {
       // No more models available
       if (lastError) {

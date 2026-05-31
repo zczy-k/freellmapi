@@ -117,6 +117,24 @@ function partsToString(content: string | Array<{ type: string; text?: unknown }>
     .join('');
 }
 
+// Image input via the Responses API isn't carried through translation yet
+// (partsToString flattens to text). Detect it so we can hard-fail with a clear
+// pointer to /v1/chat/completions rather than silently dropping the image
+// (#118, #125). Recognizes the Responses `input_image` part plus the
+// chat-style `image_url` / `image` parts some clients reuse here.
+export function responsesInputHasImage(req: ResponsesRequest): boolean {
+  if (typeof req.input === 'string') return false;
+  for (const item of req.input) {
+    const content = (item as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    if (content.some((p) => {
+      const type = (p as { type?: string })?.type;
+      return type === 'input_image' || type === 'image_url' || type === 'image';
+    })) return true;
+  }
+  return false;
+}
+
 // ── Translate a Responses request → internal chat messages + options ──────
 export function toChatMessages(req: ResponsesRequest): ChatMessage[] {
   const messages: ChatMessage[] = [];
@@ -250,6 +268,20 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
   }
 
   const reqData = parsed.data;
+
+  // Vision isn't carried through the Responses translation yet — fail clearly
+  // instead of answering blind to a dropped image (#118, #125).
+  if (responsesInputHasImage(reqData)) {
+    res.status(422).json({
+      error: {
+        message: 'Image input is not yet supported on /v1/responses. Use /v1/chat/completions with an image_url content part instead.',
+        type: 'invalid_request_error',
+        code: 'no_vision_model',
+      },
+    });
+    return;
+  }
+
   const stream = reqData.stream ?? false;
   const messages = toChatMessages(reqData);
   const tools = toChatTools(reqData.tools);

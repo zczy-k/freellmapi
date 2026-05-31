@@ -49,6 +49,22 @@ describe('POST /v1/responses (#96)', () => {
     expect((await post(app, '/v1/responses', { model: 'auto' }, key)).status).toBe(400);
   });
 
+  // #118: image input isn't carried through the Responses translation yet, so
+  // it must hard-fail clearly rather than silently answer blind to the image.
+  it('rejects image input with a clear 422 pointing at /v1/chat/completions', async () => {
+    const { status, text } = await post(app, '/v1/responses', {
+      input: [{
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'what is this?' },
+          { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' },
+        ],
+      }],
+    }, key);
+    expect(status).toBe(422);
+    expect(JSON.parse(text).error.code).toBe('no_vision_model');
+  });
+
   // #103: the x-api-key header (Anthropic wire format) must authenticate here
   // too, not just on /v1/chat/completions.
   it('accepts the unified key via the x-api-key header', async () => {
