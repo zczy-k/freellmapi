@@ -354,7 +354,7 @@ clone_repo() {
 }
 
 install_npm_deps() {
-    log_step "Installing npm dependencies"
+    log_step "Installing npm dependencies (including devDependencies for build)"
     cd "$APP_DIR"
 
     local npm_cmd
@@ -368,8 +368,8 @@ install_npm_deps() {
     node_dir=$(dirname "$(get_node_bin)")
     export PATH="${node_dir}:${PATH}"
 
-    log_info "Running: ${npm_cmd} install --omit=dev"
-    if ! $npm_cmd install --omit=dev --no-audit --no-fund 2>&1; then
+    log_info "Running: ${npm_cmd} install"
+    if ! $npm_cmd install --no-audit --no-fund 2>&1; then
         log_error "npm install failed (see output above)"
         exit 1
     fi
@@ -403,6 +403,24 @@ build_app() {
     fi
 
     log_info "Application built"
+}
+
+prune_dev_deps() {
+    log_step "Pruning devDependencies to save space"
+    cd "$APP_DIR"
+
+    local npm_cmd
+    npm_cmd=$(get_npm_bin)
+    if [[ -z "$npm_cmd" ]]; then
+        return 0
+    fi
+
+    local node_dir
+    node_dir=$(dirname "$(get_node_bin)")
+    export PATH="${node_dir}:${PATH}"
+
+    $npm_cmd prune --omit=dev > /dev/null 2>&1 || true
+    log_info "DevDependencies pruned"
 }
 
 generate_encryption_key() {
@@ -669,6 +687,7 @@ do_install() {
     setup_swap
     install_npm_deps
     build_app
+    prune_dev_deps
     create_env_file
     mkdir -p "${DATA_DIR}"
     set_permissions
