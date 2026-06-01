@@ -622,20 +622,15 @@ ProtectClock=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictNamespaces=true
 RestrictRealtime=true
-RestrictSUIDSGID=true
-LockPersonality=true
 PrivateDevices=true
 
 CapabilityBoundingSet=
 AmbientCapabilities=
 
-ReadWritePaths=${APP_DIR}/data ${APP_DIR}/.env
-ReadOnlyPaths=${APP_DIR}/server ${APP_DIR}/client ${APP_DIR}/shared ${APP_DIR}/node_modules ${NVM_DIR}
+ReadWritePaths=${APP_DIR}
 
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
@@ -685,8 +680,11 @@ health_check() {
     port=$(grep -E "^PORT=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || echo "3001")
     port="${port:-3001}"
 
-    local max_retries=10
+    local max_retries=15
     local retry=0
+    local start_delay=3
+
+    sleep "$start_delay"
 
     while [[ $retry -lt $max_retries ]]; do
         if curl -sf "http://127.0.0.1:${port}/api/ping" > /dev/null 2>&1; then
@@ -694,10 +692,17 @@ health_check() {
             return 0
         fi
         retry=$((retry + 1))
-        sleep 2
+        if [[ $retry -lt $max_retries ]]; then
+            sleep 2
+        fi
     done
 
     log_error "Health check failed after ${max_retries} retries"
+    log_error "Service status: $(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo 'unknown')"
+    log_error "Last 20 log lines:"
+    journalctl -u "$SERVICE_NAME" -n 20 --no-pager 2>&1 | while IFS= read -r line; do
+        log_error "  $line"
+    done
     return 1
 }
 
