@@ -42,7 +42,7 @@ confirm() {
     if [[ "$YES_MODE" == "true" ]]; then
         return 0
     fi
-    local prompt="$1 [y/N]: "
+    local prompt="$1 [y/N]："
     read -r -p "$prompt" response
     case "$response" in
         [yY][eE][sS]|[yY]) return 0 ;;
@@ -52,7 +52,7 @@ confirm() {
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        log_error "This script must be run as root."
+        log_error "此脚本必须以 root 身份运行。"
         exit 1
     fi
 }
@@ -86,7 +86,7 @@ detect_os() {
         OS_ID="unknown"
         OS_VERSION="unknown"
     fi
-    log_info "Detected OS: ${OS_ID} ${OS_VERSION} (${OS_FAMILY})"
+    log_info "检测到操作系统：${OS_ID} ${OS_VERSION} (${OS_FAMILY})"
 }
 
 is_installed() {
@@ -112,7 +112,7 @@ check_port_conflict() {
     local port="${1:-3001}"
 
     if ! command -v ss &>/dev/null && ! command -v netstat &>/dev/null; then
-        log_warn "Cannot check port availability (ss/netstat not found)"
+        log_warn "无法检查端口可用性（未找到 ss/netstat）"
         return 0
     fi
 
@@ -126,16 +126,16 @@ check_port_conflict() {
     if [[ -n "$listener" ]]; then
         local proc_info
         proc_info=$(echo "$listener" | awk '{for(i=1;i<=NF;i++) if($i ~ /users/) print $i}')
-        log_error "Port ${port} is already in use!"
+        log_error "端口 ${port} 已被占用！"
         log_error "  ${listener}"
         if [[ -n "$proc_info" ]]; then
-            log_error "  Process: ${proc_info}"
+            log_error "  进程：${proc_info}"
         fi
-        log_error "Please stop the conflicting service or use a different port (-p PORT)."
+        log_error "请停止冲突的服务或使用其他端口 (-p PORT)。"
         return 1
     fi
 
-    log_info "Port ${port} is available"
+    log_info "端口 ${port} 可用"
     return 0
 }
 
@@ -184,7 +184,7 @@ get_npm_bin() {
 }
 
 install_system_deps() {
-    log_step "Installing system dependencies (only if missing)"
+    log_step "安装系统依赖（仅在缺失时）"
     local pkgs_to_install=()
 
     for cmd_pkg in "git:git" "curl:curl" "wget:wget" "python3:python3" "make:make" "g++:g++" "ca-certificates:ca-certificates"; do
@@ -196,11 +196,11 @@ install_system_deps() {
     done
 
     if [[ ${#pkgs_to_install[@]} -eq 0 ]]; then
-        log_info "All system dependencies already present"
+        log_info "所有系统依赖已存在"
         return 0
     fi
 
-    log_info "Installing missing packages: ${pkgs_to_install[*]}"
+    log_info "安装缺失的软件包：${pkgs_to_install[*]}"
     case "$OS_FAMILY" in
         debian)
             apt-get update -qq
@@ -217,14 +217,14 @@ install_system_deps() {
             apk add --quiet "${pkgs_to_install[@]}"
             ;;
         *)
-            log_warn "Unsupported OS. Please install manually: ${pkgs_to_install[*]}"
+            log_warn "不支持的操作系统，请手动安装：${pkgs_to_install[*]}"
             ;;
     esac
-    log_info "System dependencies installed"
+    log_info "系统依赖已安装"
 }
 
 install_system_deps_minimal() {
-    log_step "Installing minimal system dependencies (prebuilt mode)"
+    log_step "安装最小系统依赖（预编译模式）"
     local pkgs_to_install=()
 
     for cmd_pkg in "curl:curl" "ca-certificates:ca-certificates"; do
@@ -236,11 +236,11 @@ install_system_deps_minimal() {
     done
 
     if [[ ${#pkgs_to_install[@]} -eq 0 ]]; then
-        log_info "All minimal dependencies already present"
+        log_info "所有最小依赖已存在"
         return 0
     fi
 
-    log_info "Installing missing packages: ${pkgs_to_install[*]}"
+    log_info "安装缺失的软件包：${pkgs_to_install[*]}"
     case "$OS_FAMILY" in
         debian)
             apt-get update -qq
@@ -257,10 +257,10 @@ install_system_deps_minimal() {
             apk add --quiet "${pkgs_to_install[@]}"
             ;;
         *)
-            log_warn "Unsupported OS. Please install manually: ${pkgs_to_install[*]}"
+            log_warn "不支持的操作系统，请手动安装：${pkgs_to_install[*]}"
             ;;
     esac
-    log_info "Minimal dependencies installed"
+    log_info "最小依赖已安装"
 }
 
 install_nodejs() {
@@ -269,7 +269,7 @@ install_nodejs() {
     if [[ -n "$nvm_node" ]]; then
         local nvm_node_version
         nvm_node_version=$("$nvm_node" -v)
-        log_info "Node.js ${nvm_node_version} (nvm) already installed in ${NVM_DIR}"
+        log_info "Node.js ${nvm_node_version} (nvm) 已安装在 ${NVM_DIR}"
         return 0
     fi
 
@@ -277,53 +277,53 @@ install_nodejs() {
         local sys_node_version
         sys_node_version=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
         if [[ "$sys_node_version" -ge "$NODE_MAJOR" ]]; then
-            log_info "System Node.js $(node -v) meets requirements, using it"
-            log_warn "Note: Using system Node.js. If other projects need a different version, consider installing nvm separately."
+            log_info "系统 Node.js $(node -v) 满足要求，使用系统版本"
+            log_warn "注意：正在使用系统 Node.js。如果其他项目需要不同版本，建议单独安装 nvm。"
             return 0
         else
-            log_warn "System Node.js $(node -v) is too old (need >= ${NODE_MAJOR}), installing via nvm..."
+            log_warn "系统 Node.js $(node -v) 版本过低（需要 >= ${NODE_MAJOR}），通过 nvm 安装..."
         fi
     fi
 
-    log_step "Installing Node.js ${NODE_MAJOR} via nvm (isolated, no system-wide impact)"
+    log_step "通过 nvm 安装 Node.js ${NODE_MAJOR}（隔离安装，不影响系统）"
 
     mkdir -p "${NVM_DIR}"
 
     export NVM_DIR="${NVM_DIR}"
     if ! curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | \
         NVM_DIR="${NVM_DIR}" NVM_SOURCE="" PROFILE="/dev/null" bash 2>&1 | grep -v 'Profile not found\|Create one of them\|Append the following\|export NVM_DIR\|Close and reopen\|This loads nvm' ; then
-        log_error "nvm install script failed"
+        log_error "nvm 安装脚本执行失败"
         exit 1
     fi
 
     if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
         . "${NVM_DIR}/nvm.sh"
     else
-        log_error "nvm.sh not found at ${NVM_DIR}/nvm.sh"
-        log_error "Checking alternative location ${NVM_DIR}/.nvm/nvm.sh..."
+        log_error "在 ${NVM_DIR}/nvm.sh 未找到 nvm.sh"
+        log_error "检查备用位置 ${NVM_DIR}/.nvm/nvm.sh..."
         if [[ -s "${NVM_DIR}/.nvm/nvm.sh" ]]; then
             NVM_DIR="${NVM_DIR}/.nvm"
             export NVM_DIR
             . "${NVM_DIR}/nvm.sh"
-            log_warn "nvm installed to ${NVM_DIR} (nested .nvm), adjusting NVM_DIR"
+            log_warn "nvm 安装到 ${NVM_DIR}（嵌套 .nvm），正在调整 NVM_DIR"
         else
-            log_error "nvm installation failed completely"
+            log_error "nvm 安装完全失败"
             exit 1
         fi
     fi
 
-    log_info "Installing Node.js ${NODE_MAJOR} via nvm..."
+    log_info "正在通过 nvm 安装 Node.js ${NODE_MAJOR}..."
     if ! nvm install "${NODE_MAJOR}" 2>&1; then
-        log_error "nvm install ${NODE_MAJOR} failed"
+        log_error "nvm install ${NODE_MAJOR} 失败"
         exit 1
     fi
     nvm alias default "${NODE_MAJOR}" > /dev/null 2>&1
 
     nvm_node=$(find_nvm_node_bin) || true
     if [[ -n "$nvm_node" ]]; then
-        log_info "Node.js $("${nvm_node}" -v) installed (isolated at ${NVM_DIR})"
+        log_info "Node.js $("${nvm_node}" -v) 已安装（隔离在 ${NVM_DIR}）"
     else
-        log_error "Node.js installation via nvm failed"
+        log_error "通过 nvm 安装 Node.js 失败"
         exit 1
     fi
 }
@@ -333,7 +333,7 @@ setup_swap() {
     total_swap=$(free -m | awk '/^Swap:/{print $2}')
 
     if [[ "$total_swap" -ge 1024 ]]; then
-        log_info "Swap already configured (${total_swap}MB), skipping"
+        log_info "Swap 已配置（${total_swap}MB），跳过"
         return 0
     fi
 
@@ -344,13 +344,13 @@ setup_swap() {
         return 0
     fi
 
-    log_step "Setting up swap (recommended for ${total_mem}MB RAM)"
-    if ! confirm "Add 1GB swap file at ${SWAP_FILE}?"; then
+    log_step "设置 Swap（推荐用于 ${total_mem}MB 内存）"
+    if ! confirm "在 ${SWAP_FILE} 创建 1GB Swap 文件？"; then
         return 0
     fi
 
     if [[ -f "$SWAP_FILE" ]]; then
-        log_info "Swap file already exists at ${SWAP_FILE}, enabling..."
+        log_info "Swap 文件已存在于 ${SWAP_FILE}，正在启用..."
         swapon "$SWAP_FILE" 2>/dev/null || true
         return 0
     fi
@@ -365,23 +365,23 @@ setup_swap() {
     fi
 
     touch "$SWAP_FLAG"
-    log_info "Swap configured (1GB at ${SWAP_FILE})"
+    log_info "Swap 已配置（1GB，位于 ${SWAP_FILE}）"
 }
 
 create_user() {
     if id "$APP_NAME" &>/dev/null; then
-        log_info "User '$APP_NAME' already exists"
+        log_info "用户 '$APP_NAME' 已存在"
         return 0
     fi
     useradd --system --no-create-home --shell /usr/sbin/nologin "$APP_NAME" 2>/dev/null || \
     useradd --system --no-create-home --shell /bin/false "$APP_NAME" 2>/dev/null || true
-    log_info "User '$APP_NAME' created"
+    log_info "用户 '$APP_NAME' 已创建"
 }
 
 clone_repo() {
-    log_step "Cloning repository"
+    log_step "克隆仓库"
     if [[ -d "$APP_DIR/.git" ]]; then
-        log_info "Repository already exists at ${APP_DIR}"
+        log_info "仓库已存在于 ${APP_DIR}"
         cd "$APP_DIR"
         git reset --hard HEAD --quiet 2>/dev/null || true
         git clean -fd --quiet 2>/dev/null || true
@@ -389,33 +389,33 @@ clone_repo() {
     fi
 
     if [[ -d "$APP_DIR" ]]; then
-        log_warn "${APP_DIR} exists but is not a git repo, backing up..."
+        log_warn "${APP_DIR} 已存在但不是 git 仓库，正在备份..."
         mv "$APP_DIR" "${APP_DIR}.old.$$"
     fi
 
     git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR" --quiet
-    log_info "Repository cloned"
+    log_info "仓库已克隆"
 }
 
 download_prebuilt() {
-    log_step "Downloading prebuilt release"
+    log_step "下载预编译版本"
     mkdir -p "$APP_DIR"
 
     local tmp_file
     tmp_file=$(mktemp)
 
-    log_info "Downloading from ${PREBUILT_RELEASE_URL}"
+    log_info "正在从 ${PREBUILT_RELEASE_URL} 下载"
     if ! curl -fsSL -o "$tmp_file" "$PREBUILT_RELEASE_URL" 2>&1; then
-        log_error "Failed to download prebuilt release"
-        log_error "This may mean the GitHub Actions workflow hasn't run yet."
-        log_error "Try again later, or use --build mode to build locally."
+        log_error "下载预编译版本失败"
+        log_error "这可能意味着 GitHub Actions 工作流尚未运行。"
+        log_error "请稍后重试，或使用 --build 模式在本地编译。"
         rm -f "$tmp_file"
         exit 1
     fi
 
-    log_info "Extracting..."
+    log_info "正在解压..."
     if ! tar -xzf "$tmp_file" -C "$APP_DIR" 2>&1; then
-        log_error "Failed to extract prebuilt release"
+        log_error "解压预编译版本失败"
         rm -f "$tmp_file"
         exit 1
     fi
@@ -423,7 +423,7 @@ download_prebuilt() {
     rm -f "$tmp_file"
 
     if [[ ! -d "${APP_DIR}/server-dist" ]]; then
-        log_error "Prebuilt release is missing server-dist directory"
+        log_error "预编译版本缺少 server-dist 目录"
         exit 1
     fi
 
@@ -442,17 +442,17 @@ download_prebuilt() {
         mv "${APP_DIR}/client-package.json" "${APP_DIR}/client/package.json"
     fi
 
-    log_info "Prebuilt release downloaded and extracted"
+    log_info "预编译版本已下载并解压"
 }
 
 install_npm_deps() {
-    log_step "Installing npm dependencies (including devDependencies for build)"
+    log_step "安装 npm 依赖（包含 devDependencies 用于编译）"
     cd "$APP_DIR"
 
     local npm_cmd
     npm_cmd=$(get_npm_bin)
     if [[ -z "$npm_cmd" ]]; then
-        log_error "npm not found"
+        log_error "未找到 npm"
         exit 1
     fi
 
@@ -460,23 +460,23 @@ install_npm_deps() {
     node_dir=$(dirname "$(get_node_bin)")
     export PATH="${node_dir}:${PATH}"
 
-    log_info "Running: ${npm_cmd} install"
+    log_info "正在执行：${npm_cmd} install"
     if ! $npm_cmd install --no-audit --no-fund 2>&1; then
-        log_error "npm install failed (see output above)"
+        log_error "npm install 失败（请查看上方输出）"
         exit 1
     fi
 
-    log_info "npm dependencies installed"
+    log_info "npm 依赖已安装"
 }
 
 build_app() {
-    log_step "Building application"
+    log_step "编译应用"
     cd "$APP_DIR"
 
     local node_cmd
     node_cmd=$(get_node_bin)
     if [[ -z "$node_cmd" ]]; then
-        log_error "node not found"
+        log_error "未找到 node"
         exit 1
     fi
 
@@ -488,17 +488,17 @@ build_app() {
     export PATH="${node_dir}:${PATH}"
     export NODE_OPTIONS="--max-old-space-size=512"
 
-    log_info "Running: ${npm_cmd} run build"
+    log_info "正在执行：${npm_cmd} run build"
     if ! $npm_cmd run build 2>&1; then
-        log_error "Build failed (see output above)"
+        log_error "编译失败（请查看上方输出）"
         exit 1
     fi
 
-    log_info "Application built"
+    log_info "应用已编译"
 }
 
 prune_dev_deps() {
-    log_step "Pruning devDependencies to save space"
+    log_step "清理 devDependencies 以节省空间"
     cd "$APP_DIR"
 
     local npm_cmd
@@ -512,14 +512,14 @@ prune_dev_deps() {
     export PATH="${node_dir}:${PATH}"
 
     $npm_cmd prune --omit=dev > /dev/null 2>&1 || true
-    log_info "DevDependencies pruned"
+    log_info "devDependencies 已清理"
 }
 
 generate_encryption_key() {
     if [[ -f "$ENV_FILE" ]]; then
         existing_key=$(grep -E "^ENCRYPTION_KEY=" "$ENV_FILE" | cut -d'=' -f2)
         if [[ -n "$existing_key" && "$existing_key" != "your-64-char-hex-key-here" ]]; then
-            log_info "ENCRYPTION_KEY already configured, keeping existing"
+            log_info "ENCRYPTION_KEY 已配置，保留现有密钥"
             return 0
         fi
     fi
@@ -527,7 +527,7 @@ generate_encryption_key() {
     local node_cmd
     node_cmd=$(get_node_bin)
     if [[ -z "$node_cmd" ]]; then
-        log_error "node not found for key generation"
+        log_error "未找到 node，无法生成密钥"
         exit 1
     fi
 
@@ -544,21 +544,21 @@ PORT=${port}
 EOF
     fi
     chmod 600 "$ENV_FILE"
-    log_info "ENCRYPTION_KEY generated and saved to .env"
+    log_info "ENCRYPTION_KEY 已生成并保存到 .env"
 }
 
 create_env_file() {
     if [[ -f "$ENV_FILE" ]]; then
-        log_info ".env file already exists, updating if needed..."
+        log_info ".env 文件已存在，按需更新..."
         generate_encryption_key
         return 0
     fi
 
-    log_step "Creating .env configuration"
+    log_step "创建 .env 配置"
     local port="${CUSTOM_PORT:-3001}"
 
     if [[ "$AUTO_MODE" == "false" && "$YES_MODE" == "false" ]]; then
-        read -r -p "    Port [${port}]: " input_port
+        read -r -p "    端口 [${port}]：" input_port
         port="${input_port:-$port}"
     fi
 
@@ -570,11 +570,11 @@ PORT=${port}
 EOF
     chmod 600 "$ENV_FILE"
     generate_encryption_key
-    log_info ".env created (PORT=${port})"
+    log_info ".env 已创建（端口=${port}）"
 }
 
 create_systemd_service() {
-    log_step "Creating systemd service"
+    log_step "创建 systemd 服务"
 
     local port="${CUSTOM_PORT:-3001}"
     if [[ -f "$ENV_FILE" ]]; then
@@ -585,7 +585,7 @@ create_systemd_service() {
     local node_path
     node_path=$(get_node_bin)
     if [[ -z "$node_path" ]]; then
-        log_error "Cannot find node binary for systemd service"
+        log_error "找不到 node 二进制文件，无法创建 systemd 服务"
         exit 1
     fi
 
@@ -594,7 +594,7 @@ create_systemd_service() {
 
     cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=FreeLLMAPI - Free LLM API Proxy
+Description=FreeLLMAPI - 免费 LLM API 代理
 After=network.target
 Conflicts=
 
@@ -638,15 +638,15 @@ EOF
 
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
-    log_info "systemd service created (sandboxed, isolated)"
+    log_info "systemd 服务已创建（沙箱隔离）"
 }
 
 setup_auto_upgrade() {
-    log_step "Setting up auto-upgrade cron job"
+    log_step "设置自动升级定时任务"
 
     if [[ "$AUTO_MODE" == "false" && "$YES_MODE" == "false" ]]; then
-        if ! confirm "Enable automatic upgrade check (every 6 hours)?"; then
-            log_info "Auto-upgrade disabled"
+        if ! confirm "启用自动升级检查（每6小时）？"; then
+            log_info "自动升级已禁用"
             return 0
         fi
     fi
@@ -661,7 +661,7 @@ PATH=/usr/local/bin:/usr/bin:/bin
 EOF
     chmod 644 "$CRON_FILE"
 
-    log_info "Auto-upgrade cron configured (every 6 hours)"
+    log_info "自动升级定时任务已配置（每6小时）"
 }
 
 set_permissions() {
@@ -688,7 +688,7 @@ health_check() {
 
     while [[ $retry -lt $max_retries ]]; do
         if curl -sf "http://127.0.0.1:${port}/api/ping" > /dev/null 2>&1; then
-            log_info "Health check passed"
+            log_info "健康检查通过"
             return 0
         fi
         retry=$((retry + 1))
@@ -697,9 +697,9 @@ health_check() {
         fi
     done
 
-    log_error "Health check failed after ${max_retries} retries"
-    log_error "Service status: $(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo 'unknown')"
-    log_error "Last 20 log lines:"
+    log_error "健康检查在 ${max_retries} 次重试后失败"
+    log_error "服务状态：$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo '未知')"
+    log_error "最近 20 条日志："
     journalctl -u "$SERVICE_NAME" -n 20 --no-pager 2>&1 | while IFS= read -r line; do
         log_error "  $line"
     done
@@ -731,8 +731,8 @@ cleanup_residual() {
         return 0
     fi
 
-    log_step "Cleaning up residual files from previous installation"
-    write_log "Cleaning up residual files"
+    log_step "清理上次安装的残留文件"
+    write_log "清理残留文件"
 
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
     systemctl disable "$SERVICE_NAME" 2>/dev/null || true
@@ -758,22 +758,22 @@ cleanup_residual() {
         userdel "$APP_NAME" 2>/dev/null || true
     fi
 
-    log_info "Residual files cleaned up"
+    log_info "残留文件已清理"
 }
 
 do_install() {
-    log_step "Installing FreeLLMAPI"
-    write_log "Starting installation"
+    log_step "正在安装 FreeLLMAPI"
+    write_log "开始安装"
 
     check_root
     detect_os
 
     if is_installed; then
-        log_warn "FreeLLMAPI is already installed and running"
-        if [[ "$YES_MODE" == "true" ]] || confirm "Reinstall?"; then
+        log_warn "FreeLLMAPI 已安装并运行中"
+        if [[ "$YES_MODE" == "true" ]] || confirm "重新安装？"; then
             do_uninstall_internal false
         else
-            log_info "Aborted"
+            log_info "已取消"
             exit 0
         fi
     fi
@@ -784,7 +784,7 @@ do_install() {
     check_port_conflict "$port" || exit 1
 
     if [[ "$BUILD_MODE" == "true" ]]; then
-        log_info "Build mode: LOCAL (building on server)"
+        log_info "编译模式：本地（在服务器上编译）"
         install_system_deps
         create_user
         clone_repo
@@ -794,7 +794,7 @@ do_install() {
         build_app
         prune_dev_deps
     else
-        log_info "Build mode: PREBUILT (downloading from GitHub Actions)"
+        log_info "编译模式：预编译（从 GitHub Actions 下载）"
         install_system_deps_minimal
         create_user
         download_prebuilt
@@ -809,7 +809,7 @@ do_install() {
     setup_auto_upgrade
     save_version
 
-    log_step "Starting FreeLLMAPI"
+    log_step "正在启动 FreeLLMAPI"
     systemctl start "$SERVICE_NAME"
 
     if health_check; then
@@ -817,19 +817,19 @@ do_install() {
         port="${port:-3001}"
         echo ""
         log_info "==========================================="
-        log_info " FreeLLMAPI installed successfully!"
+        log_info " FreeLLMAPI 安装成功！"
         log_info "==========================================="
         log_info ""
-        log_info "  Dashboard:  http://<your-ip>:${port}"
-        log_info "  API:        http://<your-ip>:${port}/v1/chat/completions"
-        log_info "  Config:     ${ENV_FILE}"
-        log_info "  Data:       ${DATA_DIR}"
-        log_info "  Node.js:    $(get_node_bin)"
-        log_info "  Logs:       journalctl -u ${SERVICE_NAME} -f"
+        log_info "  控制面板：   http://<your-ip>:${port}"
+        log_info "  API：        http://<your-ip>:${port}/v1/chat/completions"
+        log_info "  配置文件：   ${ENV_FILE}"
+        log_info "  数据目录：   ${DATA_DIR}"
+        log_info "  Node.js：    $(get_node_bin)"
+        log_info "  日志：       journalctl -u ${SERVICE_NAME} -f"
         log_info ""
-        log_warn "  IMPORTANT: Make sure port ${port} is open in your firewall!"
+        log_warn "  重要：请确保端口 ${port} 在防火墙中已开放！"
         log_warn ""
-        log_warn "  Firewall commands (choose one):"
+        log_warn "  防火墙命令（选择其一）："
         if command -v ufw &>/dev/null; then
             log_warn "    ufw allow ${port}/tcp"
         fi
@@ -840,17 +840,17 @@ do_install() {
             log_warn "    iptables -A INPUT -p tcp --dport ${port} -j ACCEPT"
         fi
         log_info ""
-        log_info "  Management commands:"
-        log_info "    ${0} status      - Check status"
-        log_info "    ${0} logs        - View logs"
-        log_info "    ${0} restart     - Restart service"
-        log_info "    ${0} upgrade     - Upgrade to latest"
-        log_info "    ${0} uninstall   - Remove everything"
+        log_info "  管理命令："
+        log_info "    ${0} status      - 查看状态"
+        log_info "    ${0} logs        - 查看日志"
+        log_info "    ${0} restart     - 重启服务"
+        log_info "    ${0} upgrade     - 升级到最新版"
+        log_info "    ${0} uninstall   - 卸载所有内容"
         log_info ""
-        write_log "Installation completed successfully"
+        write_log "安装成功完成"
     else
-        log_error "Installation completed but health check failed."
-        log_error "Check logs: journalctl -u ${SERVICE_NAME} -n 50"
+        log_error "安装已完成但健康检查失败。"
+        log_error "查看日志：journalctl -u ${SERVICE_NAME} -n 50"
         exit 1
     fi
 }
@@ -861,7 +861,7 @@ do_upgrade() {
     check_root
 
     if ! is_installed; then
-        log_error "FreeLLMAPI is not installed. Run '${0} install' first."
+        log_error "FreeLLMAPI 未安装。请先运行 '${0} install'。"
         exit 1
     fi
 
@@ -875,21 +875,21 @@ do_upgrade() {
 do_upgrade_prebuilt() {
     local auto_flag="${1:-false}"
 
-    log_step "Checking for prebuilt updates"
-    write_log "Checking for prebuilt updates"
+    log_step "检查预编译更新"
+    write_log "检查预编译更新"
 
     local current
     current=$(cat "$DEPLOY_VERSION_FILE" 2>/dev/null || echo "unknown")
 
-    log_info "Current version: ${current}"
-    log_info "Downloading latest prebuilt release..."
+    log_info "当前版本：${current}"
+    log_info "正在下载最新预编译版本..."
 
     local tmp_file
     tmp_file=$(mktemp)
 
     if ! curl -fsSL -o "$tmp_file" "$PREBUILT_RELEASE_URL" 2>&1; then
         if [[ "$auto_flag" != "true" ]]; then
-            log_error "Failed to download prebuilt release"
+            log_error "下载预编译版本失败"
         fi
         rm -f "$tmp_file"
         exit 1
@@ -903,7 +903,7 @@ do_upgrade_prebuilt() {
         old_hash=$(cat "${APP_DIR}/.release-hash")
         if [[ "$old_hash" == "$new_hash" ]]; then
             if [[ "$auto_flag" != "true" ]]; then
-                log_info "Already up to date (same release)"
+                log_info "已是最新版本（相同版本）"
             fi
             rm -f "$tmp_file"
             exit 0
@@ -911,14 +911,14 @@ do_upgrade_prebuilt() {
     fi
 
     if [[ "$auto_flag" != "true" && "$YES_MODE" == "false" ]]; then
-        if ! confirm "New version available. Proceed with upgrade?"; then
-            log_info "Upgrade cancelled"
+        if ! confirm "发现新版本，是否继续升级？"; then
+            log_info "升级已取消"
             rm -f "$tmp_file"
             exit 0
         fi
     fi
 
-    log_step "Backing up current version"
+    log_step "备份当前版本"
     rm -rf "$BACKUP_DIR"
     mkdir -p "$BACKUP_DIR"
     cp -a "${APP_DIR}/server" "${BACKUP_DIR}/" 2>/dev/null || true
@@ -928,10 +928,10 @@ do_upgrade_prebuilt() {
     cp -a "${APP_DIR}/package.json" "${BACKUP_DIR}/" 2>/dev/null || true
     cp -a "$ENV_FILE" "${BACKUP_DIR}/.env.backup"
     cp -a "$DEPLOY_VERSION_FILE" "${BACKUP_DIR}/.deploy-version.backup" 2>/dev/null || true
-    log_info "Backup saved to ${BACKUP_DIR}"
+    log_info "备份已保存到 ${BACKUP_DIR}"
 
-    log_step "Upgrading FreeLLMAPI (prebuilt)"
-    write_log "Starting prebuilt upgrade"
+    log_step "正在升级 FreeLLMAPI（预编译模式）"
+    write_log "开始预编译升级"
 
     local upgrade_failed=false
 
@@ -939,7 +939,7 @@ do_upgrade_prebuilt() {
     rm -f "${APP_DIR}/package.json" "${APP_DIR}/package-lock.json" "${APP_DIR}/.release-hash"
 
     if ! tar -xzf "$tmp_file" -C "$APP_DIR" 2>&1; then
-        log_error "Failed to extract prebuilt release"
+        log_error "解压预编译版本失败"
         upgrade_failed=true
     fi
     rm -f "$tmp_file"
@@ -961,23 +961,23 @@ do_upgrade_prebuilt() {
         echo "$new_hash" > "${APP_DIR}/.release-hash"
 
         set_permissions
-        log_step "Restarting service"
+        log_step "正在重启服务"
         systemctl restart "$SERVICE_NAME"
 
         if health_check; then
             rm -rf "$BACKUP_DIR"
             log_info "==========================================="
-            log_info " Upgrade successful! (prebuilt)"
+            log_info " 升级成功！（预编译模式）"
             log_info "==========================================="
-            write_log "Prebuilt upgrade completed"
+            write_log "预编译升级完成"
         else
             upgrade_failed=true
         fi
     fi
 
     if [[ "$upgrade_failed" == "true" ]]; then
-        log_error "Upgrade failed! Rolling back..."
-        write_log "Upgrade failed, rolling back"
+        log_error "升级失败！正在回滚..."
+        write_log "升级失败，正在回滚"
 
         systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 
@@ -997,10 +997,10 @@ do_upgrade_prebuilt() {
         local port
         port=$(grep -E '^PORT=' "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || echo "3001")
         if curl -sf "http://127.0.0.1:${port:-3001}/api/ping" > /dev/null 2>&1; then
-            log_info "Rollback successful, service restored"
+            log_info "回滚成功，服务已恢复"
         else
-            log_error "Rollback also failed! Manual intervention required."
-            log_error "Backup is at: ${BACKUP_DIR}"
+            log_error "回滚也失败了！需要手动干预。"
+            log_error "备份位于：${BACKUP_DIR}"
         fi
         exit 1
     fi
@@ -1009,12 +1009,12 @@ do_upgrade_prebuilt() {
 do_upgrade_build() {
     local auto_flag="${1:-false}"
 
-    log_step "Checking for updates (build mode)"
-    write_log "Checking for updates"
+    log_step "检查更新（编译模式）"
+    write_log "检查更新"
 
     cd "$APP_DIR"
     git fetch origin "$BRANCH" --quiet 2>/dev/null || {
-        log_error "Failed to fetch from remote"
+        log_error "从远程仓库获取失败"
         exit 1
     }
 
@@ -1024,9 +1024,9 @@ do_upgrade_build() {
 
     if [[ "$current" == "$latest" ]]; then
         if [[ "$auto_flag" != "true" ]]; then
-            log_info "Already up to date (no new commits)"
+            log_info "已是最新版本（无新提交）"
         fi
-        write_log "No update available"
+        write_log "无可用更新"
         exit 0
     fi
 
@@ -1036,16 +1036,16 @@ do_upgrade_build() {
     local commit_count
     commit_count=$(git rev-list "${current}..${latest}" --count 2>/dev/null || echo "?")
 
-    log_info "Update available: ${current_short} -> ${latest_short} (${commit_count} new commits)"
+    log_info "发现更新：${current_short} -> ${latest_short}（${commit_count} 个新提交）"
 
     if [[ "$auto_flag" != "true" && "$YES_MODE" == "false" ]]; then
-        if ! confirm "Proceed with upgrade?"; then
-            log_info "Upgrade cancelled"
+        if ! confirm "是否继续升级？"; then
+            log_info "升级已取消"
             exit 0
         fi
     fi
 
-    log_step "Backing up current version"
+    log_step "备份当前版本"
     rm -rf "$BACKUP_DIR"
     mkdir -p "$BACKUP_DIR"
     cp -a "${APP_DIR}/server" "${BACKUP_DIR}/" 2>/dev/null || true
@@ -1056,30 +1056,30 @@ do_upgrade_build() {
     cp -a "${APP_DIR}/package.json" "${BACKUP_DIR}/" 2>/dev/null || true
     cp -a "$ENV_FILE" "${BACKUP_DIR}/.env.backup"
     cp -a "$DEPLOY_VERSION_FILE" "${BACKUP_DIR}/.deploy-version.backup" 2>/dev/null || true
-    log_info "Backup saved to ${BACKUP_DIR}"
+    log_info "备份已保存到 ${BACKUP_DIR}"
 
-    log_step "Upgrading FreeLLMAPI (build mode)"
-    write_log "Starting upgrade: ${current_short} -> ${latest_short}"
+    log_step "正在升级 FreeLLMAPI（编译模式）"
+    write_log "开始升级：${current_short} -> ${latest_short}"
 
     local upgrade_failed=false
 
     cd "$APP_DIR"
 
     git reset --hard "origin/${BRANCH}" --quiet 2>/dev/null || {
-        log_error "git pull failed"
+        log_error "git pull 失败"
         upgrade_failed=true
     }
 
     if [[ "$upgrade_failed" == "false" ]]; then
         install_npm_deps || {
-            log_error "npm install failed"
+            log_error "npm install 失败"
             upgrade_failed=true
         }
     fi
 
     if [[ "$upgrade_failed" == "false" ]]; then
         build_app || {
-            log_error "Build failed"
+            log_error "编译失败"
             upgrade_failed=true
         }
     fi
@@ -1087,25 +1087,25 @@ do_upgrade_build() {
     if [[ "$upgrade_failed" == "false" ]]; then
         prune_dev_deps || true
         set_permissions
-        log_step "Restarting service"
+        log_step "正在重启服务"
         systemctl restart "$SERVICE_NAME"
 
         if health_check; then
             save_version
             rm -rf "$BACKUP_DIR"
             log_info "==========================================="
-            log_info " Upgrade successful!"
+            log_info " 升级成功！"
             log_info " ${current_short} -> ${latest_short}"
             log_info "==========================================="
-            write_log "Upgrade completed: ${current_short} -> ${latest_short}"
+            write_log "升级完成：${current_short} -> ${latest_short}"
         else
             upgrade_failed=true
         fi
     fi
 
     if [[ "$upgrade_failed" == "true" ]]; then
-        log_error "Upgrade failed! Rolling back..."
-        write_log "Upgrade failed, rolling back"
+        log_error "升级失败！正在回滚..."
+        write_log "升级失败，正在回滚"
 
         systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 
@@ -1123,10 +1123,10 @@ do_upgrade_build() {
 
         sleep 3
         if curl -sf "http://127.0.0.1:$(grep -E '^PORT=' "$ENV_FILE" | cut -d'=' -f2 || echo 3001)/api/ping" > /dev/null 2>&1; then
-            log_info "Rollback successful, service restored"
+            log_info "回滚成功，服务已恢复"
         else
-            log_error "Rollback also failed! Manual intervention required."
-            log_error "Backup is at: ${BACKUP_DIR}"
+            log_error "回滚也失败了！需要手动干预。"
+            log_error "备份位于：${BACKUP_DIR}"
         fi
         exit 1
     fi
@@ -1135,18 +1135,18 @@ do_upgrade_build() {
 do_uninstall_internal() {
     local purge="${1:-false}"
 
-    log_step "Stopping service"
+    log_step "正在停止服务"
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
     systemctl disable "$SERVICE_NAME" 2>/dev/null || true
 
-    log_step "Removing service files"
+    log_step "正在移除服务文件"
     rm -f "$SERVICE_FILE"
     systemctl daemon-reload 2>/dev/null || true
 
-    log_step "Removing cron job"
+    log_step "正在移除定时任务"
     rm -f "$CRON_FILE"
 
-    log_step "Removing log file"
+    log_step "正在移除日志文件"
     rm -f "$LOG_FILE"
 
     local port="3001"
@@ -1155,22 +1155,22 @@ do_uninstall_internal() {
         port="${port:-3001}"
     fi
 
-    log_step "Removing application"
+    log_step "正在移除应用"
     rm -rf "$APP_DIR"
 
-    log_step "Removing nvm Node.js at ${NVM_DIR}"
+    log_step "正在移除 nvm Node.js（${NVM_DIR}）"
     rm -rf "$NVM_DIR"
 
-    log_step "Removing backup"
+    log_step "正在移除备份"
     rm -rf "$BACKUP_DIR"
 
     if [[ "$purge" == "true" ]]; then
-        log_step "Purging data directory"
+        log_step "正在清除数据目录"
         rm -rf "$DATA_DIR"
         rm -f "$DEPLOY_VERSION_FILE"
 
         if [[ -f "$SWAP_FLAG" ]]; then
-            log_step "Removing swap (created by this script)"
+            log_step "正在移除 Swap（由此脚本创建）"
             if [[ -f "$SWAP_FILE" ]] && swapon --show | grep -q "$SWAP_FILE"; then
                 swapoff "$SWAP_FILE" 2>/dev/null || true
             fi
@@ -1178,13 +1178,13 @@ do_uninstall_internal() {
             sed -i "\|${SWAP_FILE}|d" /etc/fstab 2>/dev/null || true
             rm -f "$SWAP_FLAG"
         else
-            log_info "Swap was not created by this script, skipping"
+            log_info "Swap 非此脚本创建，跳过"
         fi
 
-        log_step "Removing user"
+        log_step "正在移除用户"
         userdel "$APP_NAME" 2>/dev/null || true
 
-        log_warn "Firewall: You may want to close port ${port}:"
+        log_warn "防火墙：您可能需要关闭端口 ${port}："
         if command -v ufw &>/dev/null; then
             log_warn "    ufw deny ${port}/tcp"
         fi
@@ -1196,10 +1196,10 @@ do_uninstall_internal() {
         fi
     else
         if [[ -f "$SWAP_FLAG" ]]; then
-            log_info "Swap file at ${SWAP_FILE} preserved (use purge to remove)"
+            log_info "Swap 文件（${SWAP_FILE}）已保留（使用 purge 移除）"
         fi
         if [[ -d "$DATA_DIR" ]]; then
-            log_info "Data directory at ${DATA_DIR} preserved"
+            log_info "数据目录（${DATA_DIR}）已保留"
         fi
     fi
 }
@@ -1209,52 +1209,52 @@ do_uninstall() {
     detect_os
 
     if ! is_installed && [[ ! -d "$APP_DIR" ]]; then
-        log_error "FreeLLMAPI is not installed."
+        log_error "FreeLLMAPI 未安装。"
         exit 1
     fi
 
     echo ""
-    log_warn "This will remove FreeLLMAPI from your system."
+    log_warn "此操作将从系统中移除 FreeLLMAPI。"
     echo ""
-    echo "  Options:"
-    echo "    1) Remove application only (keep data, .env, swap)"
-    echo "    2) Remove everything including data, .env, swap, user, nvm Node.js"
-    echo "    3) Cancel"
+    echo "  选项："
+    echo "    1) 仅移除应用（保留数据、.env、Swap）"
+    echo "    2) 移除所有内容（包括数据、.env、Swap、用户、nvm Node.js）"
+    echo "    3) 取消"
     echo ""
 
     if [[ "$YES_MODE" == "true" ]]; then
         local purge_choice="2"
     else
-        read -r -p "  Select [1-3]: " purge_choice
+        read -r -p "  请选择 [1-3]：" purge_choice
     fi
 
     case "$purge_choice" in
         1)
             do_uninstall_internal false
-            log_info "FreeLLMAPI uninstalled (data preserved at ${DATA_DIR})"
+            log_info "FreeLLMAPI 已卸载（数据保留在 ${DATA_DIR}）"
             ;;
         2)
-            if [[ "$YES_MODE" == "true" ]] || confirm "This will DELETE all data. Are you sure?"; then
+            if [[ "$YES_MODE" == "true" ]] || confirm "此操作将删除所有数据，确定吗？"; then
                 do_uninstall_internal true
-                log_info "FreeLLMAPI completely removed (including all data)"
+                log_info "FreeLLMAPI 已完全移除（包括所有数据）"
             else
-                log_info "Uninstall cancelled"
+                log_info "卸载已取消"
             fi
             ;;
         *)
-            log_info "Uninstall cancelled"
+            log_info "卸载已取消"
             ;;
     esac
 }
 
 do_status() {
     if ! is_installed; then
-        log_error "FreeLLMAPI is not installed."
+        log_error "FreeLLMAPI 未安装。"
         exit 1
     fi
 
     echo ""
-    log_info "FreeLLMAPI Status"
+    log_info "FreeLLMAPI 状态"
     echo "  ─────────────────────────────────────"
 
     local port
@@ -1268,29 +1268,29 @@ do_status() {
         node_version=$("$node_path" -v 2>/dev/null || echo "N/A")
     fi
 
-    echo "  Install dir:   ${APP_DIR}"
-    echo "  Version:       $(get_current_version | head -c 12)"
-    echo "  Config:        ${ENV_FILE}"
-    echo "  Data dir:      ${DATA_DIR}"
-    echo "  Port:          ${port}"
-    echo "  Node.js:       ${node_version} (${node_path:-N/A})"
-    echo "  Service:       $(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo 'unknown')"
-    echo "  Auto-upgrade:  $([ -f "$CRON_FILE" ] && echo 'enabled' || echo 'disabled')"
-    echo "  Swap:          $(free -m | awk '/^Swap:/{print $2}')MB"
-    echo "  Memory usage:  $(ps -o rss= -p "$(pgrep -f 'server/dist/index.js' | head -1)" 2>/dev/null | awk '{printf "%.0fMB\n", $1/1024}' || echo 'N/A')"
+    echo "  安装目录：     ${APP_DIR}"
+    echo "  版本：         $(get_current_version | head -c 12)"
+    echo "  配置文件：     ${ENV_FILE}"
+    echo "  数据目录：     ${DATA_DIR}"
+    echo "  端口：         ${port}"
+    echo "  Node.js：      ${node_version} (${node_path:-N/A})"
+    echo "  服务状态：     $(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo '未知')"
+    echo "  自动升级：     $([ -f "$CRON_FILE" ] && echo '已启用' || echo '已禁用')"
+    echo "  Swap：         $(free -m | awk '/^Swap:/{print $2}')MB"
+    echo "  内存占用：     $(ps -o rss= -p "$(pgrep -f 'server/dist/index.js' | head -1)" 2>/dev/null | awk '{printf "%.0fMB\n", $1/1024}' || echo 'N/A')"
     echo ""
 
     if curl -sf "http://127.0.0.1:${port}/api/ping" > /dev/null 2>&1; then
-        log_info "Health check: OK"
+        log_info "健康检查：正常"
     else
-        log_error "Health check: FAILED"
+        log_error "健康检查：失败"
     fi
     echo ""
 }
 
 do_logs() {
     if ! is_installed; then
-        log_error "FreeLLMAPI is not installed."
+        log_error "FreeLLMAPI 未安装。"
         exit 1
     fi
 
@@ -1304,33 +1304,33 @@ do_logs() {
 do_restart() {
     check_root
     if ! is_installed; then
-        log_error "FreeLLMAPI is not installed."
+        log_error "FreeLLMAPI 未安装。"
         exit 1
     fi
     systemctl restart "$SERVICE_NAME"
-    log_info "Service restarted"
+    log_info "服务已重启"
     health_check
 }
 
 do_start() {
     check_root
     if ! is_installed; then
-        log_error "FreeLLMAPI is not installed."
+        log_error "FreeLLMAPI 未安装。"
         exit 1
     fi
     systemctl start "$SERVICE_NAME"
-    log_info "Service started"
+    log_info "服务已启动"
     health_check
 }
 
 do_stop() {
     check_root
     if ! is_installed; then
-        log_error "FreeLLMAPI is not installed."
+        log_error "FreeLLMAPI 未安装。"
         exit 1
     fi
     systemctl stop "$SERVICE_NAME"
-    log_info "Service stopped"
+    log_info "服务已停止"
 }
 
 do_check_update() {
@@ -1349,9 +1349,9 @@ do_check_update() {
         if [[ "$current" != "$latest" ]]; then
             local commit_count
             commit_count=$(git rev-list "${current}..${latest}" --count 2>/dev/null || echo "?")
-            log_info "Update available: ${commit_count} new commits"
+            log_info "发现更新：${commit_count} 个新提交"
         else
-            log_info "Already up to date"
+            log_info "已是最新版本"
         fi
     else
         local current_hash
@@ -1362,12 +1362,12 @@ do_check_update() {
             local remote_hash
             remote_hash=$(sha256sum "$tmp_file" | cut -d' ' -f1)
             if [[ "$current_hash" == "$remote_hash" ]]; then
-                log_info "Already up to date"
+                log_info "已是最新版本"
             else
-                log_info "Update available (new prebuilt release)"
+                log_info "发现更新（新预编译版本）"
             fi
         else
-            log_warn "Cannot check for updates (download failed)"
+            log_warn "无法检查更新（下载失败）"
         fi
         rm -f "$tmp_file"
     fi
@@ -1376,17 +1376,17 @@ do_check_update() {
 show_interactive_menu() {
     echo ""
     echo -e "  ${CYAN}╔══════════════════════════════════════════╗${NC}"
-    echo -e "  ${CYAN}║${NC}      ${GREEN}FreeLLMAPI Deployment Manager${NC}        ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}      ${GREEN}FreeLLMAPI 部署管理器${NC}              ${CYAN}║${NC}"
     echo -e "  ${CYAN}╠══════════════════════════════════════════╣${NC}"
     echo -e "  ${CYAN}║${NC}                                          ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}1)${NC} Install          (fresh install)     ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}2)${NC} Upgrade           (update version)    ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}3)${NC} Uninstall         (remove app)        ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}4)${NC} Status            (check service)     ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}5)${NC} Logs              (view logs)         ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}6)${NC} Restart           (restart service)   ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}7)${NC} Help              (more commands)     ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}0)${NC} Exit                                   ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}1)${NC} 安装            （全新安装）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}2)${NC} 升级            （更新版本）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}3)${NC} 卸载            （移除应用）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}4)${NC} 状态            （查看服务）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}5)${NC} 日志            （查看日志）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}6)${NC} 重启            （重启服务）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}7)${NC} 帮助            （更多命令）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}0)${NC} 退出                                   ${CYAN}║${NC}"
     echo -e "  ${CYAN}║${NC}                                          ${CYAN}║${NC}"
     echo -e "  ${CYAN}╚══════════════════════════════════════════╝${NC}"
     echo ""
@@ -1398,16 +1398,16 @@ show_interactive_menu() {
         local svc_status
         svc_status=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo 'unknown')
         if [[ "$svc_status" == "active" ]]; then
-            log_info "Service is running on port ${port}"
+            log_info "服务正在运行，端口 ${port}"
         else
-            log_warn "Service is ${svc_status}"
+            log_warn "服务状态：${svc_status}"
         fi
     else
-        log_info "FreeLLMAPI is not installed"
+        log_info "FreeLLMAPI 未安装"
     fi
 
     echo ""
-    read -r -p "  Select [0-7]: " choice
+    read -r -p "  请选择 [0-7]：" choice
 
     case "$choice" in
         1) do_install ;;
@@ -1417,64 +1417,64 @@ show_interactive_menu() {
         5) do_logs ;;
         6) do_restart ;;
         7) show_help ;;
-        0) log_info "Bye!"; exit 0 ;;
-        *) log_error "Invalid choice"; exit 1 ;;
+        0) log_info "再见！"; exit 0 ;;
+        *) log_error "无效选择"; exit 1 ;;
     esac
 }
 
 show_help() {
     cat << EOF
 
-FreeLLMAPI Deployment Manager
+FreeLLMAPI 部署管理器
 
-Usage: $(basename "$0") <command> [options]
+用法：$(basename "$0") <命令> [选项]
 
-Commands:
-  install          Install FreeLLMAPI
-  upgrade          Upgrade to latest version
-  uninstall        Remove FreeLLMAPI
-  status           Show service status
-  logs [-f]        View logs (-f to follow)
-  start            Start service
-  stop             Stop service
-  restart          Restart service
-  check-update     Check if update is available
+命令：
+  install          安装 FreeLLMAPI
+  upgrade          升级到最新版本
+  uninstall        卸载 FreeLLMAPI
+  status           查看服务状态
+  logs [-f]        查看日志（-f 实时跟踪）
+  start            启动服务
+  stop             停止服务
+  restart          重启服务
+  check-update     检查是否有可用更新
 
-Options:
-  -y, --yes        Skip all confirmation prompts
-  --auto           Non-interactive mode (for cron)
-  --build          Build locally on server instead of downloading prebuilt
-  -p, --port PORT  Set port (default: 3001)
-  -h, --help       Show this help
+选项：
+  -y, --yes        跳过所有确认提示
+  --auto           非交互模式（用于定时任务）
+  --build          在服务器本地编译，而非下载预编译版本
+  -p, --port PORT  设置端口（默认：3001）
+  -h, --help       显示此帮助
 
-Isolation features:
-  - Node.js installed via nvm (isolated, no system-wide impact)
-  - Dedicated system user (freellmapi)
-  - systemd sandbox (no new privs, private /tmp, read-only filesystems)
-  - Memory limit 512MB, CPU quota 50%
-  - Port conflict detection before install
-  - Project-specific swap file (won't touch existing swap)
+隔离特性：
+  - Node.js 通过 nvm 安装（隔离，不影响系统）
+  - 专用系统用户（freellmapi）
+  - systemd 沙箱（无新权限、私有 /tmp、只读文件系统）
+  - 内存限制 512MB，CPU 配额 50%
+  - 安装前检测端口冲突
+  - 项目专用 Swap 文件（不影响现有 Swap）
 
-Examples:
-  # Interactive menu (no arguments)
+示例：
+  # 交互菜单（无参数）
   sudo $(basename "$0")
 
-  # Fresh install with defaults
+  # 使用默认值全新安装
   sudo $(basename "$0") install -y
 
-  # Install with custom port
+  # 使用自定义端口安装
   sudo $(basename "$0") install -y -p 8080
 
-  # One-line install (prebuilt, recommended for low-spec servers)
+  # 一行命令安装（预编译，推荐低配服务器使用）
   curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/${BRANCH}/deploy.sh | sudo bash -s install -y
 
-  # Install with local build (for servers with enough RAM)
+  # 本地编译安装（适用于内存充足的服务器）
   sudo $(basename "$0") install -y --build
 
-  # Upgrade interactively
+  # 交互式升级
   sudo $(basename "$0") upgrade
 
-  # Complete removal including data
+  # 完全卸载（包括数据）
   sudo $(basename "$0") uninstall -y
 
 EOF
@@ -1522,7 +1522,7 @@ main() {
                 shift
                 ;;
             *)
-                log_error "Unknown option: $1"
+                log_error "未知选项：$1"
                 show_help
                 exit 1
                 ;;
@@ -1561,7 +1561,7 @@ main() {
             show_help
             ;;
         *)
-            log_error "Unknown command: $command"
+            log_error "未知命令：$command"
             show_help
             exit 1
             ;;

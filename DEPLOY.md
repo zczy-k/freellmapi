@@ -2,13 +2,45 @@
 
 本文档介绍如何使用 `deploy.sh` 脚本在 VPS 上一键部署、升级、管理 FreeLLMAPI。
 
-> 适用于：2 核 1G 及以上的 Linux 服务器（Ubuntu / Debian / CentOS / Rocky / Alpine）
+> 适用于：2 核 1G 及以上的 Linux 服务器（Ubuntu 22.04+ / Debian 12+ / CentOS / Rocky / Alpine）
 
 ---
 
 ## 快速开始
 
-一行命令完成安装：
+### 方式一：交互式菜单
+
+```bash
+# 下载脚本
+curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh -o deploy.sh
+chmod +x deploy.sh
+
+# 运行（不带参数，显示交互式菜单）
+sudo ./deploy.sh
+```
+
+运行后会显示菜单：
+
+```
+  ╔══════════════════════════════════════════╗
+  ║      FreeLLMAPI 部署管理器              ║
+  ╠══════════════════════════════════════════╣
+  ║                                            ║
+  ║  1) 安装            （全新安装）           ║
+  ║  2) 升级            （更新版本）           ║
+  ║  3) 卸载            （移除应用）           ║
+  ║  4) 状态            （查看服务）           ║
+  ║  5) 日志            （查看日志）           ║
+  ║  6) 重启            （重启服务）           ║
+  ║  7) 帮助            （更多命令）           ║
+  ║  0) 退出                                   ║
+  ║                                            ║
+  ╚══════════════════════════════════════════╝
+
+  Select [0-7]:
+```
+
+### 方式二：一行命令直接安装
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh | sudo bash -s install -y
@@ -22,22 +54,44 @@ curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh | 
 
 - 一台 Linux VPS（推荐 Ubuntu 22.04 / Debian 12）
 - Root 权限
-- 可访问 GitHub 和 npm（国内服务器需确保代理或网络通畅）
+- 可访问 GitHub（国内服务器需确保代理或网络通畅）
 
 脚本会自动处理以下依赖，无需手动安装：
 
 | 依赖 | 说明 |
 |---|---|
-| Node.js 20 | 通过 nvm 安装到项目目录，不影响系统 Node.js |
-| git, curl, python3, make, g++ | 仅在缺失时安装 |
+| Node.js 20 | 通过 nvm 安装到 `/opt/freellmapi-nvm`，不影响系统 Node.js |
+| curl, ca-certificates | 预编译模式仅需这两个（缺失时自动安装） |
 | Swap | 内存 ≤ 2GB 时自动提示添加 |
+
+---
+
+## 两种安装模式
+
+脚本支持两种安装模式：
+
+| 模式 | 说明 | 适用场景 |
+|---|---|---|
+| **预编译模式**（默认） | 从 GitHub Actions 下载已编译好的版本 | 低配服务器（2核1G），推荐 |
+| **本地编译模式** | 在服务器上 clone 源码并编译 | 内存 ≥ 2GB 的服务器 |
+
+预编译模式的优势：
+- 不在服务器上编译，节省内存和时间
+- 服务器只需 `curl` 和 `ca-certificates`
+- GitHub Actions 在 Ubuntu 22.04 上构建，确保 GLIBC 兼容性
+
+使用本地编译模式：
+
+```bash
+sudo ./deploy.sh install -y --build
+```
 
 ---
 
 ## 命令一览
 
 ```bash
-./deploy.sh <command> [options]
+sudo ./deploy.sh <命令> [选项]
 ```
 
 | 命令 | 说明 |
@@ -56,6 +110,7 @@ curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh | 
 |---|---|
 | `-y, --yes` | 跳过所有确认提示 |
 | `--auto` | 非交互模式（cron 使用） |
+| `--build` | 本地编译模式（默认为预编译模式） |
 | `-p, --port PORT` | 指定端口（默认 3001） |
 | `-h, --help` | 显示帮助 |
 
@@ -66,7 +121,7 @@ curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh | 
 ### 交互式安装
 
 ```bash
-wget https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh
+curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh -o deploy.sh
 chmod +x deploy.sh
 sudo ./deploy.sh install
 ```
@@ -90,13 +145,13 @@ sudo ./deploy.sh install -y -p 8080
 脚本自动执行以下步骤：
 
 1. 检测操作系统
-2. 检测端口是否被占用
-3. 安装缺失的系统依赖（git, curl, python3, make, g++）
-4. 通过 nvm 安装 Node.js 20（隔离安装，不影响系统）
-5. 内存不足时提示添加 1GB Swap
-6. 创建专用系统用户 `freellmapi`
-7. 克隆仓库到 `/opt/freellmapi`
-8. 安装 npm 依赖并构建项目
+2. 清理上次安装的残留文件（如有）
+3. 检测端口是否被占用
+4. 安装缺失的系统依赖
+5. 创建专用系统用户 `freellmapi`
+6. 下载预编译版本（或克隆仓库并编译）
+7. 通过 nvm 安装 Node.js 20（隔离安装，不影响系统）
+8. 内存不足时提示添加 1GB Swap
 9. 生成 `ENCRYPTION_KEY` 并创建 `.env` 配置
 10. 创建 systemd 服务（含沙箱隔离）
 11. 配置自动升级 cron（每 6 小时检测）
@@ -108,19 +163,19 @@ sudo ./deploy.sh install -y -p 8080
 
 ```
 [INFO] ===========================================
-[INFO]  FreeLLMAPI installed successfully!
+[INFO]  FreeLLMAPI 安装成功！
 [INFO] ===========================================
 [INFO]
-[INFO]   Dashboard:  http://<your-ip>:3001
-[INFO]   API:        http://<your-ip>:3001/v1/chat/completions
-[INFO]   Config:     /opt/freellmapi/.env
-[INFO]   Data:       /opt/freellmapi/data
-[INFO]   Node.js:    /opt/freellmapi-nvm/versions/node/v20.x.x/bin/node
-[INFO]   Logs:       journalctl -u freellmapi -f
+[INFO]   管理面板：  http://<你的IP>:3001
+[INFO]   API 地址：  http://<你的IP>:3001/v1/chat/completions
+[INFO]   配置文件：  /opt/freellmapi/.env
+[INFO]   数据目录：  /opt/freellmapi/server/data
+[INFO]   Node.js：   /opt/freellmapi-nvm/versions/node/v20.x.x/bin/node
+[INFO]   查看日志：  journalctl -u freellmapi -f
 [INFO]
-[WARN]   IMPORTANT: Make sure port 3001 is open in your firewall!
+[WARN]   重要：请确保防火墙已开放端口 3001！
 [WARN]
-[WARN]   Firewall commands (choose one):
+[WARN]   防火墙命令（选择其一）：
 [WARN]     ufw allow 3001/tcp
 ```
 
@@ -135,34 +190,25 @@ sudo ./deploy.sh install -y -p 8080
 ### Ubuntu / Debian（ufw）
 
 ```bash
-# 开放端口
 sudo ufw allow 3001/tcp
-
-# 查看状态
 sudo ufw status
 ```
 
 ### CentOS / Rocky / RHEL（firewalld）
 
 ```bash
-# 开放端口
 sudo firewall-cmd --permanent --add-port=3001/tcp
 sudo firewall-cmd --reload
-
-# 查看已开放端口
 sudo firewall-cmd --list-ports
 ```
 
 ### 通用（iptables）
 
 ```bash
-# 开放端口
 sudo iptables -A INPUT -p tcp --dport 3001 -j ACCEPT
-
-# 保存规则（Debian/Ubuntu）
+# Debian/Ubuntu 保存规则
 sudo netfilter-persistent save
-
-# 保存规则（CentOS/RHEL）
+# CentOS/RHEL 保存规则
 sudo service iptables save
 ```
 
@@ -181,18 +227,16 @@ sudo ./deploy.sh upgrade
 ```
 
 脚本会自动：
-1. 从 GitHub 拉取最新代码
+1. 下载最新预编译版本（或 git pull 拉取最新代码）
 2. 对比当前版本与最新版本
 3. 如有更新，询问是否升级
-4. 备份当前版本
-5. 拉取代码 → 安装依赖 → 构建 → 重启
+4. 备份当前版本到 `/opt/freellmapi-backup`
+5. 替换文件并重启服务
 6. 健康检查，失败则自动回滚
 
 ### 自动升级
 
-安装时默认开启，每 6 小时自动检测一次。也可手动开启/关闭：
-
-自动升级的 cron 配置在 `/etc/cron.d/freellmapi-auto-upgrade`，可手动编辑调整检测频率。
+安装时默认开启，每 6 小时自动检测一次。配置文件在 `/etc/cron.d/freellmapi-auto-upgrade`，可手动编辑调整检测频率。
 
 ### 升级安全机制
 
@@ -213,7 +257,7 @@ sudo ./deploy.sh uninstall
 
 | 选项 | 说明 | 删除范围 |
 |---|---|---|
-| **1) 保留数据** | 仅删除应用，保留数据库和配置 | 应用、服务、cron、日志 |
+| **1) 仅移除应用** | 保留数据库和配置 | 应用、服务、cron、日志 |
 | **2) 完全清除** | 删除所有内容，包括数据 | 应用、数据、Swap、用户、nvm |
 
 完全清除后会提示关闭防火墙端口。
@@ -237,20 +281,20 @@ sudo ./deploy.sh status
 输出示例：
 
 ```
-[INFO] FreeLLMAPI Status
+[INFO] FreeLLMAPI 状态
   ─────────────────────────────────────
-  Install dir:   /opt/freellmapi
-  Version:       a1b2c3d4e5f6
-  Config:        /opt/freellmapi/.env
-  Data dir:      /opt/freellmapi/data
-  Port:          3001
-  Node.js:       v20.x.x (/opt/freellmapi-nvm/.../node)
-  Service:       active
-  Auto-upgrade:  enabled
-  Swap:          1024MB
-  Memory usage:  45MB
+  安装目录：   /opt/freellmapi
+  版本：       a1b2c3d4e5f6
+  配置文件：   /opt/freellmapi/.env
+  数据目录：   /opt/freellmapi/server/data
+  端口：       3001
+  Node.js：    v20.x.x
+  服务状态：   active
+  自动升级：   已启用
+  Swap：       1024MB
+  内存占用：   45MB
 
-[INFO] Health check: OK
+[INFO] 健康检查：正常
 ```
 
 ### 查看日志
@@ -312,14 +356,13 @@ sudo ./deploy.sh restart
 |---|---|
 | **Node.js** | 通过 nvm 安装到 `/opt/freellmapi-nvm`，不碰系统 Node.js |
 | **系统用户** | 专用用户 `freellmapi`，无 shell 登录权限 |
-| **文件系统** | systemd `ProtectSystem=strict`，只允许写入 `data/` 和 `.env` |
+| **文件系统** | systemd `ProtectSystem=strict`，只允许写入应用目录 |
 | **临时文件** | systemd `PrivateTmp=true`，独立 /tmp 命名空间 |
 | **内存** | systemd `MemoryMax=512M`，防止内存泄漏影响其他服务 |
 | **CPU** | systemd `CPUQuota=50%`，最多占用 1 核的一半 |
 | **网络端口** | 安装前自动检测端口冲突 |
 | **Swap** | 项目专属 Swap 文件，卸载时只删自己创建的 |
 | **权限** | systemd `NoNewPrivileges=true` + `CapabilityBoundingSet=` |
-| **系统调用** | systemd `SystemCallFilter=@system-service`，禁止危险调用 |
 
 ---
 
@@ -329,15 +372,33 @@ sudo ./deploy.sh restart
 |---|---|
 | `/opt/freellmapi/` | 应用根目录 |
 | `/opt/freellmapi/.env` | 环境变量配置（含 ENCRYPTION_KEY 和 PORT） |
-| `/opt/freellmapi/data/` | SQLite 数据库目录 |
+| `/opt/freellmapi/server/data/` | SQLite 数据库目录 |
 | `/opt/freellmapi-nvm/` | nvm 安装的 Node.js（独立于应用目录） |
 | `/opt/freellmapi/.deploy-version` | 当前部署版本号 |
+| `/opt/freellmapi/.release-hash` | 预编译版本 SHA256 哈希 |
 | `/opt/freellmapi.swap` | Swap 文件（如创建） |
-| `/opt/freellmapi/.swap-created-by-deploy` | Swap 标记文件 |
 | `/opt/freellmapi-backup/` | 升级备份目录（升级成功后自动删除） |
 | `/etc/systemd/system/freellmapi.service` | systemd 服务文件 |
 | `/etc/cron.d/freellmapi-auto-upgrade` | 自动升级 cron |
 | `/var/log/freellmapi-deploy.log` | 部署操作日志 |
+
+---
+
+## 自动化链路
+
+整个自动化流程如下：
+
+```
+上游代码更新
+    ↓
+sync-upstream.yml（每 6 小时自动同步上游到 fork）
+    ↓
+build-release.yml（push 到 main 时自动构建）
+    ↓
+发布预编译版本到 dist 分支
+    ↓
+VPS cron（每 6 小时自动检测并下载升级）
+```
 
 ---
 
@@ -346,7 +407,7 @@ sudo ./deploy.sh restart
 ### 安装时端口被占用
 
 ```
-[ERROR] Port 3001 is already in use!
+[ERROR] 端口 3001 已被占用！
 [ERROR]   LISTEN  0  128  0.0.0.0:3001  0.0.0.0:*  users:(("nginx",pid=1234,fd=6))
 ```
 
@@ -357,14 +418,15 @@ sudo ./deploy.sh restart
 ### 健康检查失败
 
 ```
-[ERROR] Health check failed after 10 retries
+[ERROR] 健康检查在 15 次重试后失败
+[ERROR] 服务状态：failed
+[ERROR] 最近 20 行日志：
 ```
 
-排查步骤：
-1. 查看日志：`journalctl -u freellmapi -n 50`
-2. 检查 `.env` 中 `ENCRYPTION_KEY` 是否正确
-3. 检查端口是否被防火墙拦截：`curl http://127.0.0.1:3001/api/ping`
-4. 检查 Node.js 是否正常：`/opt/freellmapi-nvm/versions/node/v20.x.x/bin/node -v`
+脚本会自动输出日志帮助排查。常见原因：
+1. GLIBC 版本不兼容（Ubuntu 20.04 及以下）— 升级系统或使用 `--build` 本地编译
+2. 端口被防火墙拦截：`curl http://127.0.0.1:3001/api/ping`
+3. Node.js 安装异常：`/opt/freellmapi-nvm/versions/node/v20.x.x/bin/node -v`
 
 ### 内存不足（OOM）
 
@@ -379,9 +441,9 @@ sudo ./deploy.sh restart
 
 ### 国内服务器无法访问 GitHub
 
-如果 VPS 在国内，`git clone` 和 `npm install` 可能超时。解决方案：
+如果 VPS 在国内，下载预编译版本可能超时。解决方案：
 1. 配置代理后重试
-2. 或在境外机器上构建后打包上传
+2. 或使用 `--build` 本地编译模式（但 npm install 也需要网络）
 
 ---
 
