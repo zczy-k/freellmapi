@@ -1511,22 +1511,54 @@ do_setup_domain() {
         exit 1
     fi
 
-    if ! host "$domain" &>/dev/null && ! nslookup "$domain" &>/dev/null && ! dig +short "$domain" &>/dev/null; then
-        log_warn "无法解析域名 ${domain}，请确认 DNS 已正确配置"
-        if ! confirm "继续配置？"; then
-            exit 0
+    if command -v host &>/dev/null; then
+        if ! host "$domain" &>/dev/null; then
+            log_warn "无法解析域名 ${domain}，请确认 DNS 已正确配置"
+            if ! confirm "继续配置？"; then
+                exit 0
+            fi
         fi
+    elif command -v nslookup &>/dev/null; then
+        if ! nslookup "$domain" &>/dev/null; then
+            log_warn "无法解析域名 ${domain}，请确认 DNS 已正确配置"
+            if ! confirm "继续配置？"; then
+                exit 0
+            fi
+        fi
+    else
+        log_warn "未安装 DNS 工具（host/nslookup），跳过域名解析验证"
+        log_warn "请确保域名 ${domain} 已正确解析到此服务器"
     fi
+
+    check_port_conflict 80 || { log_error "80 端口被占用，无法配置 HTTP/HTTPS"; exit 1; }
+    check_port_conflict 443 || { log_error "443 端口被占用，无法配置 HTTPS"; exit 1; }
 
     install_nginx || exit 1
 
-    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+    local nginx_include_dir=""
+    if [[ -d /etc/nginx/sites-enabled ]]; then
+        nginx_include_dir="sites-enabled"
+        mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+    elif [[ -d /etc/nginx/conf.d ]]; then
+        nginx_include_dir="conf.d"
+        mkdir -p /etc/nginx/conf.d
+    else
+        mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+        nginx_include_dir="sites-enabled"
+    fi
 
-    if ! grep -q 'include.*sites-enabled' /etc/nginx/nginx.conf 2>/dev/null; then
-        if [[ -f /etc/nginx/nginx.conf ]]; then
-            sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
-            log_info "已将 sites-enabled 加入 nginx.conf"
+    if [[ "$nginx_include_dir" == "sites-enabled" ]]; then
+        NGINX_CONF_FILE="/etc/nginx/sites-available/freellmapi"
+        NGINX_LINK_FILE="/etc/nginx/sites-enabled/freellmapi"
+        if ! grep -q 'include.*sites-enabled' /etc/nginx/nginx.conf 2>/dev/null; then
+            if [[ -f /etc/nginx/nginx.conf ]]; then
+                sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
+                log_info "已将 sites-enabled 加入 nginx.conf"
+            fi
         fi
+    else
+        NGINX_CONF_FILE="/etc/nginx/conf.d/freellmapi.conf"
+        NGINX_LINK_FILE=""
     fi
 
     log_step "创建 Nginx 配置（${domain}）"
@@ -1550,7 +1582,7 @@ server {
 }
 EOF
 
-    if [[ ! -L "$NGINX_LINK_FILE" ]]; then
+    if [[ -n "$NGINX_LINK_FILE" && ! -L "$NGINX_LINK_FILE" ]]; then
         ln -s "$NGINX_CONF_FILE" "$NGINX_LINK_FILE"
     fi
 
@@ -1566,7 +1598,18 @@ EOF
     log_step "申请 SSL 证书"
     install_certbot || exit 1
 
-    if certbot --nginx -d "$domain" --non-interactive --agree-tos --register-unsafely-without-email --redirect 2>&1; then
+    local certbot_email=""
+    read -r -p "  请输入邮箱（用于 Let's Encrypt 证书到期提醒，可留空跳过）：" certbot_email
+    certbot_email=$(echo "$certbot_email" | xargs)
+
+    local certbot_cmd="certbot --nginx -d $domain --non-interactive --agree-tos --redirect"
+    if [[ -n "$certbot_email" ]]; then
+        certbot_cmd="$certbot_cmd --email $certbot_email"
+    else
+        certbot_cmd="$certbot_cmd --register-unsafely-without-email"
+    fi
+
+    if $certbot_cmd 2>&1; then
         echo "$domain" > "$DOMAIN_FILE"
         log_info "==========================================="
         log_info " 域名和 SSL 配置成功！"
@@ -1595,11 +1638,14 @@ EOF
 }
 
 do_remove_domain_silent() {
-    if [[ -f "$NGINX_CONF_FILE" ]]; then
-        rm -f "$NGINX_CONF_FILE"
+    if [[ -f "/etc/nginx/sites-available/freellmapi" ]]; then
+        rm -f "/etc/nginx/sites-available/freellmapi"
     fi
-    if [[ -L "$NGINX_LINK_FILE" ]]; then
-        rm -f "$NGINX_LINK_FILE"
+    if [[ -L "/etc/nginx/sites-enabled/freellmapi" ]]; then
+        rm -f "/etc/nginx/sites-enabled/freellmapi"
+    fi
+    if [[ -f "/etc/nginx/conf.d/freellmapi.conf" ]]; then
+        rm -f "/etc/nginx/conf.d/freellmapi.conf"
     fi
     if command -v nginx &>/dev/null; then
         nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
