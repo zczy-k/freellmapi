@@ -8,15 +8,10 @@
 
 ## 快速开始
 
-### 方式一：交互式菜单
+### 一行命令，交互式菜单
 
 ```bash
-# 下载脚本
-curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh -o deploy.sh
-chmod +x deploy.sh
-
-# 运行（不带参数，显示交互式菜单）
-sudo ./deploy.sh
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh)
 ```
 
 运行后会显示菜单：
@@ -40,7 +35,7 @@ sudo ./deploy.sh
   Select [0-7]:
 ```
 
-### 方式二：一行命令直接安装
+### 一行命令，直接安装（跳过菜单）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh | sudo bash -s install -y

@@ -1456,17 +1456,14 @@ FreeLLMAPI 部署管理器
   - 项目专用 Swap 文件（不影响现有 Swap）
 
 示例：
-  # 交互菜单（无参数）
-  sudo $(basename "$0")
+  # 一行命令，交互式菜单
+  sudo bash <(curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/${BRANCH}/deploy.sh)
 
-  # 使用默认值全新安装
-  sudo $(basename "$0") install -y
+  # 一行命令，直接安装（跳过菜单）
+  curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/${BRANCH}/deploy.sh | sudo bash -s install -y
 
   # 使用自定义端口安装
   sudo $(basename "$0") install -y -p 8080
-
-  # 一行命令安装（预编译，推荐低配服务器使用）
-  curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/${BRANCH}/deploy.sh | sudo bash -s install -y
 
   # 本地编译安装（适用于内存充足的服务器）
   sudo $(basename "$0") install -y --build
