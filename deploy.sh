@@ -1287,7 +1287,16 @@ do_status() {
     echo "  Swap：         $(free -m | awk '/^Swap:/{print $2}')MB"
     echo "  内存占用：     $(ps -o rss= -p "$(pgrep -f 'server/dist/index.js' | head -1)" 2>/dev/null | awk '{printf "%.0fMB\n", $1/1024}' || echo 'N/A')"
     if [[ -f "$DOMAIN_FILE" ]]; then
-        echo "  域名：         https://$(cat "$DOMAIN_FILE" 2>/dev/null)"
+        local domain_info
+        domain_info=$(cat "$DOMAIN_FILE" 2>/dev/null)
+        local domain_name domain_https_port
+        domain_name=$(echo "$domain_info" | head -1)
+        domain_https_port=$(echo "$domain_info" | tail -1)
+        if [[ "$domain_https_port" == "443" || -z "$domain_https_port" ]]; then
+            echo "  域名：         https://${domain_name}"
+        else
+            echo "  域名：         https://${domain_name}:${domain_https_port}"
+        fi
     else
         echo "  域名：         未配置"
     fi
@@ -1501,7 +1510,7 @@ do_setup_domain() {
     log_info ""
     log_info "前提条件："
     log_info "  - 域名已解析到此服务器的 IP 地址"
-    log_info "  - 服务器 80 和 443 端口可从外网访问"
+    log_info "  - 服务器 80 端口可从外网访问（Let's Encrypt 验证需要）"
     log_info ""
 
     read -r -p "  请输入域名（例如 api.example.com）：" domain
@@ -1509,6 +1518,15 @@ do_setup_domain() {
     if [[ -z "$domain" ]]; then
         log_error "域名不能为空"
         exit 1
+    fi
+
+    local https_port="443"
+    read -r -p "  HTTPS 端口 [${https_port}]：" input_https_port
+    https_port="${input_https_port:-$https_port}"
+
+    if [[ "$https_port" != "443" ]]; then
+        log_info "使用自定义 HTTPS 端口：${https_port}"
+        log_info "访问地址将为：https://${domain}:${https_port}"
     fi
 
     if command -v host &>/dev/null; then
@@ -1530,8 +1548,8 @@ do_setup_domain() {
         log_warn "请确保域名 ${domain} 已正确解析到此服务器"
     fi
 
-    check_port_conflict 80 || { log_error "80 端口被占用，无法配置 HTTP/HTTPS"; exit 1; }
-    check_port_conflict 443 || { log_error "443 端口被占用，无法配置 HTTPS"; exit 1; }
+    check_port_conflict 80 || { log_error "80 端口被占用，Let's Encrypt 证书验证需要 80 端口"; exit 1; }
+    check_port_conflict "$https_port" || { log_error "端口 ${https_port} 已被占用"; exit 1; }
 
     install_nginx || exit 1
 
@@ -1610,26 +1628,58 @@ EOF
     fi
 
     if $certbot_cmd 2>&1; then
+        if [[ "$https_port" != "443" ]]; then
+            log_info "正在将 HTTPS 端口从 443 修改为 ${https_port}..."
+            sed -i "s/listen 443 ssl/listen ${https_port} ssl/g" "$NGINX_CONF_FILE"
+            sed -i "s/listen \[::\]:443 ssl/listen [::]:${https_port} ssl/g" "$NGINX_CONF_FILE"
+            if nginx -t 2>&1; then
+                systemctl reload nginx 2>/dev/null || true
+                log_info "HTTPS 端口已修改为 ${https_port}"
+            else
+                log_error "修改 HTTPS 端口后 Nginx 配置测试失败，回滚为 443"
+                sed -i "s/listen ${https_port} ssl/listen 443 ssl/g" "$NGINX_CONF_FILE"
+                sed -i "s/listen \[::\]:${https_port} ssl/listen [::]:443 ssl/g" "$NGINX_CONF_FILE"
+                nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+                https_port="443"
+            fi
+        fi
+
         echo "$domain" > "$DOMAIN_FILE"
+        echo "$https_port" >> "$DOMAIN_FILE"
         log_info "==========================================="
         log_info " 域名和 SSL 配置成功！"
         log_info "==========================================="
         log_info ""
-        log_info "  HTTPS 地址：  https://${domain}"
-        log_info "  API 地址：    https://${domain}/v1/chat/completions"
+        if [[ "$https_port" == "443" ]]; then
+            log_info "  HTTPS 地址：  https://${domain}"
+            log_info "  API 地址：    https://${domain}/v1/chat/completions"
+        else
+            log_info "  HTTPS 地址：  https://${domain}:${https_port}"
+            log_info "  API 地址：    https://${domain}:${https_port}/v1/chat/completions"
+        fi
         log_info ""
         log_info "  SSL 证书会由 Certbot 自动续期"
         log_info "  证书续期定时任务：systemctl list-timers | grep certbot"
         log_info ""
         log_warn "  建议关闭直接 IP 访问的端口 ${port}，仅通过 Nginx 代理访问"
         log_warn "  关闭命令：ufw deny ${port}/tcp"
+        if [[ "$https_port" != "443" ]]; then
+            log_warn ""
+            log_warn "  请确保防火墙已开放 HTTPS 端口 ${https_port}："
+            if command -v ufw &>/dev/null; then
+                log_warn "    ufw allow ${https_port}/tcp"
+            fi
+            if command -v firewall-cmd &>/dev/null; then
+                log_warn "    firewall-cmd --permanent --add-port=${https_port}/tcp && firewall-cmd --reload"
+            fi
+        fi
         log_info ""
     else
         log_error "SSL 证书申请失败"
         log_error "常见原因："
         log_error "  1. 域名未正确解析到此服务器"
-        log_error "  2. 80 或 443 端口被防火墙拦截"
-        log_error "  3. 80 或 443 端口被其他服务占用"
+        log_error "  2. 80 端口被防火墙拦截（Let's Encrypt 验证需要）"
+        log_error "  3. 80 端口被其他服务占用"
         log_error ""
         log_warn "HTTP 反向代理已配置，可手动修复 SSL："
         log_warn "  certbot --nginx -d ${domain}"
