@@ -10,6 +10,7 @@ on:
       - '.github/workflows/sync-upstream.yml'
       - 'repo-assets/**'
       - 'LICENSE'
+      - 'dist/**'
 
 permissions:
   contents: write
@@ -48,16 +49,25 @@ jobs:
 
           cd /tmp/freellmapi-release
           tar -czf /tmp/freellmapi-release.tar.gz .
+          sha256sum /tmp/freellmapi-release.tar.gz > /tmp/freellmapi-release.tar.gz.sha256
 
-      - name: Delete old releases
+      - name: Publish to dist branch
         run: |
-          gh release delete prebuilt --yes || true
-          git push origin :refs/tags/prebuilt || true
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create prebuilt release
-        run: |
-          gh release create prebuilt /tmp/freellmapi-release.tar.gz \
-            --title "Prebuilt Release" \
-            --notes "Auto-built from commit $(git rev-parse --short HEAD)"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git fetch origin dist --depth=1 || true
+
+          git checkout --orphan dist
+          git reset --hard
+
+          cp /tmp/freellmapi-release.tar.gz .
+          cp /tmp/freellmapi-release.tar.gz.sha256 .
+
+          echo "Auto-built from commit $(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')" > BUILD_INFO.txt
+          echo "Built at $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> BUILD_INFO.txt
+
+          git add freellmapi-release.tar.gz freellmapi-release.tar.gz.sha256 BUILD_INFO.txt
+          git commit -m "prebuilt: $(date -u '+%Y-%m-%d %H:%M UTC')"
+
+          git push origin dist --force
