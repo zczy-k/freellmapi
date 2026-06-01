@@ -94,6 +94,7 @@ sudo ./deploy.sh <命令> [选项]
 | `install` | 安装 FreeLLMAPI |
 | `upgrade` | 升级到最新版本 |
 | `uninstall` | 卸载 FreeLLMAPI |
+| `domain` | 配置域名和 SSL 证书 |
 | `status` | 查看服务状态 |
 | `logs [-f]` | 查看日志（`-f` 实时跟踪） |
 | `start` | 启动服务 |
@@ -265,7 +266,81 @@ sudo ./deploy.sh uninstall -y
 
 ---
 
-## 日常管理
+## 配置域名和 SSL
+
+### 前提条件
+
+- 已安装 FreeLLMAPI
+- 拥有一个域名，且 DNS 已解析到此服务器的 IP 地址
+- 服务器 80 和 443 端口可从外网访问（防火墙和云安全组均已放行）
+
+### 配置域名
+
+```bash
+sudo ./deploy.sh domain
+```
+
+脚本会自动：
+1. 安装 Nginx（如未安装）
+2. 创建本项目专属的 Nginx 反向代理配置
+3. 使用 Let's Encrypt 自动申请 SSL 证书
+4. 配置 HTTP 自动跳转 HTTPS
+
+配置完成后，访问地址变为：
+- 管理面板：`https://你的域名`
+- API 地址：`https://你的域名/v1/chat/completions`
+
+### 域名隔离性
+
+脚本在配置域名时**不会影响服务器上的其他项目**：
+
+| 隔离项 | 实现方式 |
+|---|---|
+| **Nginx 配置** | 只操作 `/etc/nginx/sites-available/freellmapi` 一个文件 |
+| **符号链接** | 只创建/删除 `sites-enabled/freellmapi` 一个链接 |
+| **SSL 证书** | certbot 只为指定域名申请证书，不影响其他域名 |
+| **Nginx 重载** | 使用 `reload`（平滑加载），不中断其他站点连接 |
+| **配置验证** | 每次修改后 `nginx -t` 验证，失败则自动回滚 |
+| **卸载清理** | 只删除本项目域名的 Nginx 配置和证书 |
+
+### 更换域名
+
+再次运行 `sudo ./deploy.sh domain`，选择"更换域名"即可。
+
+### 移除域名配置
+
+再次运行 `sudo ./deploy.sh domain`，选择"移除域名配置"。会删除：
+- Nginx 反向代理配置
+- Let's Encrypt SSL 证书
+- 域名记录文件
+
+移除后恢复为通过 `http://<IP>:<端口>` 直接访问。
+
+### SSL 证书续期
+
+Let's Encrypt 证书有效期为 90 天。Certbot 安装时会自动配置续期定时任务，无需手动操作。
+
+检查续期定时任务：
+
+```bash
+systemctl list-timers | grep certbot
+```
+
+手动续期测试：
+
+```bash
+sudo certbot renew --dry-run
+```
+
+### 关闭直接 IP 访问
+
+配置域名后，建议关闭直接通过 IP+端口访问，只允许通过 Nginx 代理访问：
+
+```bash
+sudo ufw deny 3001/tcp
+```
+
+> 这样外部只能通过 HTTPS（443端口）访问，提高安全性。
 
 ### 查看服务状态
 
@@ -371,6 +446,9 @@ sudo ./deploy.sh restart
 | `/opt/freellmapi-nvm/` | nvm 安装的 Node.js（独立于应用目录） |
 | `/opt/freellmapi/.deploy-version` | 当前部署版本号 |
 | `/opt/freellmapi/.release-hash` | 预编译版本 SHA256 哈希 |
+| `/opt/freellmapi/.domain` | 已配置的域名 |
+| `/etc/nginx/sites-available/freellmapi` | Nginx 反向代理配置 |
+| `/etc/nginx/sites-enabled/freellmapi` | Nginx 配置符号链接 |
 | `/opt/freellmapi.swap` | Swap 文件（如创建） |
 | `/opt/freellmapi-backup/` | 升级备份目录（升级成功后自动删除） |
 | `/etc/systemd/system/freellmapi.service` | systemd 服务文件 |

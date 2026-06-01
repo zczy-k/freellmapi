@@ -24,6 +24,9 @@ BUILD_MODE=false
 AUTO_MODE=false
 YES_MODE=false
 CUSTOM_PORT=""
+DOMAIN_FILE="${APP_DIR}/.domain"
+NGINX_CONF_FILE="/etc/nginx/sites-available/freellmapi"
+NGINX_LINK_FILE="/etc/nginx/sites-enabled/freellmapi"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -1139,6 +1142,11 @@ do_uninstall_internal() {
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
     systemctl disable "$SERVICE_NAME" 2>/dev/null || true
 
+    if [[ -f "$DOMAIN_FILE" ]]; then
+        log_step "正在移除域名配置"
+        do_remove_domain_silent
+    fi
+
     log_step "正在移除服务文件"
     rm -f "$SERVICE_FILE"
     systemctl daemon-reload 2>/dev/null || true
@@ -1278,6 +1286,11 @@ do_status() {
     echo "  自动升级：     $([ -f "$CRON_FILE" ] && echo '已启用' || echo '已禁用')"
     echo "  Swap：         $(free -m | awk '/^Swap:/{print $2}')MB"
     echo "  内存占用：     $(ps -o rss= -p "$(pgrep -f 'server/dist/index.js' | head -1)" 2>/dev/null | awk '{printf "%.0fMB\n", $1/1024}' || echo 'N/A')"
+    if [[ -f "$DOMAIN_FILE" ]]; then
+        echo "  域名：         https://$(cat "$DOMAIN_FILE" 2>/dev/null)"
+    else
+        echo "  域名：         未配置"
+    fi
     echo ""
 
     if curl -sf "http://127.0.0.1:${port}/api/ping" > /dev/null 2>&1; then
@@ -1373,6 +1386,250 @@ do_check_update() {
     fi
 }
 
+install_nginx() {
+    if command -v nginx &>/dev/null; then
+        log_info "Nginx 已安装"
+        return 0
+    fi
+
+    log_step "安装 Nginx"
+    case "$OS_FAMILY" in
+        debian)
+            apt-get update -qq
+            apt-get install -y -qq nginx > /dev/null 2>&1
+            ;;
+        rhel)
+            if command -v dnf &>/dev/null; then
+                dnf install -y -q nginx
+            else
+                yum install -y -q nginx
+            fi
+            ;;
+        alpine)
+            apk add --quiet nginx
+            ;;
+        *)
+            log_error "不支持的操作系统，请手动安装 Nginx"
+            return 1
+            ;;
+    esac
+
+    if command -v nginx &>/dev/null; then
+        systemctl enable nginx > /dev/null 2>&1 || true
+        systemctl start nginx 2>/dev/null || true
+        log_info "Nginx 已安装并启动"
+    else
+        log_error "Nginx 安装失败"
+        return 1
+    fi
+}
+
+install_certbot() {
+    if command -v certbot &>/dev/null; then
+        log_info "Certbot 已安装"
+        return 0
+    fi
+
+    log_step "安装 Certbot（Let's Encrypt 客户端）"
+    case "$OS_FAMILY" in
+        debian)
+            apt-get update -qq
+            apt-get install -y -qq certbot python3-certbot-nginx > /dev/null 2>&1
+            ;;
+        rhel)
+            if command -v dnf &>/dev/null; then
+                dnf install -y -q certbot python3-certbot-nginx
+            else
+                yum install -y -q certbot python3-certbot-nginx
+            fi
+            ;;
+        alpine)
+            apk add --quiet certbot py3-certbot-nginx
+            ;;
+        *)
+            log_error "不支持的操作系统，请手动安装 Certbot"
+            return 1
+            ;;
+    esac
+
+    if command -v certbot &>/dev/null; then
+        log_info "Certbot 已安装"
+    else
+        log_error "Certbot 安装失败"
+        return 1
+    fi
+}
+
+do_setup_domain() {
+    check_root
+    detect_os
+
+    if ! is_installed; then
+        log_error "FreeLLMAPI 未安装。请先运行 install。"
+        exit 1
+    fi
+
+    local port
+    port=$(grep -E "^PORT=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || echo "3001")
+    port="${port:-3001}"
+
+    if [[ -f "$DOMAIN_FILE" ]]; then
+        local existing_domain
+        existing_domain=$(cat "$DOMAIN_FILE" 2>/dev/null)
+        log_warn "已配置域名：${existing_domain}"
+        echo ""
+        echo "  选项："
+        echo "    1) 更换域名"
+        echo "    2) 移除域名配置"
+        echo "    3) 取消"
+        echo ""
+        read -r -p "  请选择 [1-3]：" domain_choice
+        case "$domain_choice" in
+            1) do_remove_domain_silent ;;
+            2) do_remove_domain; exit 0 ;;
+            *) log_info "已取消"; exit 0 ;;
+        esac
+    fi
+
+    echo ""
+    log_info "配置域名和 SSL 证书"
+    log_info "此功能将："
+    log_info "  1. 安装 Nginx（如未安装）"
+    log_info "  2. 创建本项目专属的 Nginx 反向代理配置"
+    log_info "  3. 使用 Let's Encrypt 自动申请 SSL 证书"
+    log_info "  4. 配置 HTTP 自动跳转 HTTPS"
+    log_info ""
+    log_info "前提条件："
+    log_info "  - 域名已解析到此服务器的 IP 地址"
+    log_info "  - 服务器 80 和 443 端口可从外网访问"
+    log_info ""
+
+    read -r -p "  请输入域名（例如 api.example.com）：" domain
+    domain=$(echo "$domain" | xargs)
+    if [[ -z "$domain" ]]; then
+        log_error "域名不能为空"
+        exit 1
+    fi
+
+    if ! host "$domain" &>/dev/null && ! nslookup "$domain" &>/dev/null && ! dig +short "$domain" &>/dev/null; then
+        log_warn "无法解析域名 ${domain}，请确认 DNS 已正确配置"
+        if ! confirm "继续配置？"; then
+            exit 0
+        fi
+    fi
+
+    install_nginx || exit 1
+
+    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+
+    if ! grep -q 'include.*sites-enabled' /etc/nginx/nginx.conf 2>/dev/null; then
+        if [[ -f /etc/nginx/nginx.conf ]]; then
+            sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
+            log_info "已将 sites-enabled 加入 nginx.conf"
+        fi
+    fi
+
+    log_step "创建 Nginx 配置（${domain}）"
+    cat > "$NGINX_CONF_FILE" << EOF
+server {
+    listen 80;
+    server_name ${domain};
+
+    location / {
+        proxy_pass http://127.0.0.1:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+EOF
+
+    if [[ ! -L "$NGINX_LINK_FILE" ]]; then
+        ln -s "$NGINX_CONF_FILE" "$NGINX_LINK_FILE"
+    fi
+
+    if ! nginx -t 2>&1; then
+        log_error "Nginx 配置测试失败，正在回滚"
+        rm -f "$NGINX_CONF_FILE" "$NGINX_LINK_FILE"
+        exit 1
+    fi
+
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null
+    log_info "Nginx 配置已生效（HTTP）"
+
+    log_step "申请 SSL 证书"
+    install_certbot || exit 1
+
+    if certbot --nginx -d "$domain" --non-interactive --agree-tos --register-unsafely-without-email --redirect 2>&1; then
+        echo "$domain" > "$DOMAIN_FILE"
+        log_info "==========================================="
+        log_info " 域名和 SSL 配置成功！"
+        log_info "==========================================="
+        log_info ""
+        log_info "  HTTPS 地址：  https://${domain}"
+        log_info "  API 地址：    https://${domain}/v1/chat/completions"
+        log_info ""
+        log_info "  SSL 证书会由 Certbot 自动续期"
+        log_info "  证书续期定时任务：systemctl list-timers | grep certbot"
+        log_info ""
+        log_warn "  建议关闭直接 IP 访问的端口 ${port}，仅通过 Nginx 代理访问"
+        log_warn "  关闭命令：ufw deny ${port}/tcp"
+        log_info ""
+    else
+        log_error "SSL 证书申请失败"
+        log_error "常见原因："
+        log_error "  1. 域名未正确解析到此服务器"
+        log_error "  2. 80 或 443 端口被防火墙拦截"
+        log_error "  3. 80 或 443 端口被其他服务占用"
+        log_error ""
+        log_warn "HTTP 反向代理已配置，可手动修复 SSL："
+        log_warn "  certbot --nginx -d ${domain}"
+        echo "$domain" > "$DOMAIN_FILE"
+    fi
+}
+
+do_remove_domain_silent() {
+    if [[ -f "$NGINX_CONF_FILE" ]]; then
+        rm -f "$NGINX_CONF_FILE"
+    fi
+    if [[ -L "$NGINX_LINK_FILE" ]]; then
+        rm -f "$NGINX_LINK_FILE"
+    fi
+    if command -v nginx &>/dev/null; then
+        nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+    fi
+    rm -f "$DOMAIN_FILE"
+}
+
+do_remove_domain() {
+    check_root
+
+    if [[ ! -f "$DOMAIN_FILE" ]]; then
+        log_info "未配置域名"
+        return 0
+    fi
+
+    local domain
+    domain=$(cat "$DOMAIN_FILE" 2>/dev/null)
+
+    log_step "移除域名配置（${domain}）"
+
+    do_remove_domain_silent
+
+    if [[ -n "$domain" ]] && command -v certbot &>/dev/null; then
+        certbot delete --cert-name "$domain" --non-interactive 2>/dev/null || true
+    fi
+
+    log_info "域名配置已移除"
+    log_info "现在通过 http://<IP>:<端口> 直接访问"
+}
+
 show_interactive_menu() {
     echo ""
     echo -e "  ${CYAN}╔══════════════════════════════════════════╗${NC}"
@@ -1382,10 +1639,11 @@ show_interactive_menu() {
     echo -e "  ${CYAN}║${NC}  ${YELLOW}1)${NC} 安装            （全新安装）         ${CYAN}║${NC}"
     echo -e "  ${CYAN}║${NC}  ${YELLOW}2)${NC} 升级            （更新版本）         ${CYAN}║${NC}"
     echo -e "  ${CYAN}║${NC}  ${YELLOW}3)${NC} 卸载            （移除应用）         ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}4)${NC} 状态            （查看服务）         ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}5)${NC} 日志            （查看日志）         ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}6)${NC} 重启            （重启服务）         ${CYAN}║${NC}"
-    echo -e "  ${CYAN}║${NC}  ${YELLOW}7)${NC} 帮助            （更多命令）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}4)${NC} 配置域名        （HTTPS/SSL）       ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}5)${NC} 状态            （查看服务）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}6)${NC} 日志            （查看日志）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}7)${NC} 重启            （重启服务）         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}8)${NC} 帮助            （更多命令）         ${CYAN}║${NC}"
     echo -e "  ${CYAN}║${NC}  ${YELLOW}0)${NC} 退出                                   ${CYAN}║${NC}"
     echo -e "  ${CYAN}║${NC}                                          ${CYAN}║${NC}"
     echo -e "  ${CYAN}╚══════════════════════════════════════════╝${NC}"
@@ -1407,16 +1665,17 @@ show_interactive_menu() {
     fi
 
     echo ""
-    read -r -p "  请选择 [0-7]：" choice
+    read -r -p "  请选择 [0-8]：" choice
 
     case "$choice" in
         1) do_install ;;
         2) do_upgrade "false" ;;
         3) do_uninstall ;;
-        4) do_status ;;
-        5) do_logs ;;
-        6) do_restart ;;
-        7) show_help ;;
+        4) do_setup_domain ;;
+        5) do_status ;;
+        6) do_logs ;;
+        7) do_restart ;;
+        8) show_help ;;
         0) log_info "再见！"; exit 0 ;;
         *) log_error "无效选择"; exit 1 ;;
     esac
@@ -1433,6 +1692,7 @@ FreeLLMAPI 部署管理器
   install          安装 FreeLLMAPI
   upgrade          升级到最新版本
   uninstall        卸载 FreeLLMAPI
+  domain           配置域名和 SSL 证书
   status           查看服务状态
   logs [-f]        查看日志（-f 实时跟踪）
   start            启动服务
@@ -1489,7 +1749,7 @@ main() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            install|upgrade|uninstall|status|logs|start|stop|restart|check-update)
+            install|upgrade|uninstall|domain|status|logs|start|stop|restart|check-update)
                 command="$1"
                 shift
                 ;;
@@ -1535,6 +1795,9 @@ main() {
             ;;
         uninstall)
             do_uninstall
+            ;;
+        domain)
+            do_setup_domain
             ;;
         status)
             do_status
