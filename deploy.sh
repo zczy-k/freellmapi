@@ -1548,8 +1548,39 @@ do_setup_domain() {
         log_warn "请确保域名 ${domain} 已正确解析到此服务器"
     fi
 
-    check_port_conflict 80 || { log_error "80 端口被占用，Let's Encrypt 证书验证需要 80 端口"; exit 1; }
-    check_port_conflict "$https_port" || { log_error "端口 ${https_port} 已被占用"; exit 1; }
+    local port_80_ok=false
+    local port_https_ok=false
+
+    if command -v ss &>/dev/null; then
+        local listener_80 listener_https
+        listener_80=$(ss -tlnp 2>/dev/null | grep -E ":80\s" | head -1 || true)
+        listener_https=$(ss -tlnp 2>/dev/null | grep -E ":${https_port}\s" | head -1 || true)
+
+        if [[ -z "$listener_80" ]]; then
+            port_80_ok=true
+        elif echo "$listener_80" | grep -q "nginx"; then
+            log_info "80 端口由 Nginx 占用，将复用现有 Nginx"
+            port_80_ok=true
+        else
+            log_error "80 端口被非 Nginx 程序占用，Let's Encrypt 证书验证需要 80 端口"
+            log_error "  ${listener_80}"
+            exit 1
+        fi
+
+        if [[ -z "$listener_https" ]]; then
+            port_https_ok=true
+        elif echo "$listener_https" | grep -q "nginx"; then
+            log_info "端口 ${https_port} 由 Nginx 占用，将复用现有 Nginx"
+            port_https_ok=true
+        else
+            log_error "端口 ${https_port} 被非 Nginx 程序占用"
+            log_error "  ${listener_https}"
+            exit 1
+        fi
+    else
+        port_80_ok=true
+        port_https_ok=true
+    fi
 
     install_nginx || exit 1
 
