@@ -13,6 +13,7 @@ interface ModelRow {
   rpd_limit: number | null;
   tpm_limit: number | null;
   tpd_limit: number | null;
+  supports_vision: number;
 }
 
 interface KeyRow {
@@ -131,8 +132,9 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
  * @param estimatedTokens - estimated total tokens for rate limit check
  * @param skipKeys - set of "platform:modelId:keyId" to skip (failed on this request)
  * @param preferredModelDbId - try this model first (sticky session)
+ * @param requireVision - only consider models that accept image input (#118)
  */
-export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number): RouteResult {
+export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number, requireVision = false): RouteResult {
   const db = getDb();
 
   // Get fallback chain ordered by priority
@@ -163,6 +165,10 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
     // Get model details
     const model = db.prepare('SELECT * FROM models WHERE id = ? AND enabled = 1').get(entry.model_db_id) as ModelRow | undefined;
     if (!model) continue;
+
+    // Vision requests skip text-only models — including a sticky/preferred one,
+    // which is correct: don't pin an image turn to a model that can't see it.
+    if (requireVision && !model.supports_vision) continue;
 
     // Check if we have a provider for this platform
     const provider = getProvider(model.platform as any);
@@ -242,4 +248,18 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
   const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.') as any;
   err.status = 429;
   throw err;
+}
+
+// Whether at least one vision-capable model is enabled in the fallback chain.
+// Used to give image requests a clear "enable a vision model" error instead of
+// the generic exhaustion message when none is configured (#118, #125).
+export function hasEnabledVisionModel(): boolean {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT COUNT(*) as cnt
+    FROM fallback_config fc
+    JOIN models m ON m.id = fc.model_db_id
+    WHERE fc.enabled = 1 AND m.enabled = 1 AND m.supports_vision = 1
+  `).get() as { cnt: number };
+  return row.cnt > 0;
 }
