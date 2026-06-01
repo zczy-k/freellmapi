@@ -1457,7 +1457,7 @@ FreeLLMAPI 部署管理器
 
 示例：
   # 一行命令，交互式菜单
-  sudo bash <(curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/${BRANCH}/deploy.sh)
+  curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/${BRANCH}/deploy.sh -o /tmp/deploy.sh && sudo bash /tmp/deploy.sh
 
   # 一行命令，直接安装（跳过菜单）
   curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/${BRANCH}/deploy.sh | sudo bash -s install -y

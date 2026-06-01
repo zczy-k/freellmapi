@@ -11,7 +11,7 @@
 ### 一行命令，交互式菜单
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh)
+curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/main/deploy.sh -o /tmp/deploy.sh && sudo bash /tmp/deploy.sh
 ```
 
 运行后会显示菜单：
