@@ -291,7 +291,7 @@ install_nodejs() {
 
     export NVM_DIR="${NVM_DIR}"
     if ! curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | \
-        NVM_DIR="${NVM_DIR}" NVM_SOURCE="" PROFILE="/dev/null" bash 2>&1; then
+        NVM_DIR="${NVM_DIR}" NVM_SOURCE="" PROFILE="/dev/null" bash 2>&1 | grep -v 'Profile not found\|Create one of them\|Append the following\|export NVM_DIR\|Close and reopen\|This loads nvm' ; then
         log_error "nvm install script failed"
         exit 1
     fi
@@ -707,8 +707,14 @@ health_check() {
 }
 
 save_version() {
-    cd "$APP_DIR"
-    git rev-parse HEAD > "$DEPLOY_VERSION_FILE" 2>/dev/null || echo "unknown" > "$DEPLOY_VERSION_FILE"
+    if [[ -d "$APP_DIR/.git" ]]; then
+        cd "$APP_DIR"
+        git rev-parse HEAD > "$DEPLOY_VERSION_FILE" 2>/dev/null || echo "unknown" > "$DEPLOY_VERSION_FILE"
+    elif [[ -f "${APP_DIR}/.release-hash" ]]; then
+        cat "${APP_DIR}/.release-hash" > "$DEPLOY_VERSION_FILE"
+    else
+        echo "unknown" > "$DEPLOY_VERSION_FILE"
+    fi
 }
 
 cleanup_residual() {
@@ -930,6 +936,7 @@ do_upgrade_prebuilt() {
     local upgrade_failed=false
 
     rm -rf "${APP_DIR}/server" "${APP_DIR}/client" "${APP_DIR}/shared" "${APP_DIR}/node_modules"
+    rm -f "${APP_DIR}/package.json" "${APP_DIR}/package-lock.json" "${APP_DIR}/.release-hash"
 
     if ! tar -xzf "$tmp_file" -C "$APP_DIR" 2>&1; then
         log_error "Failed to extract prebuilt release"
@@ -1331,18 +1338,88 @@ do_check_update() {
         exit 0
     fi
 
-    cd "$APP_DIR"
-    git fetch origin "$BRANCH" --quiet 2>/dev/null || exit 0
+    if [[ -d "$APP_DIR/.git" ]]; then
+        cd "$APP_DIR"
+        git fetch origin "$BRANCH" --quiet 2>/dev/null || exit 0
 
-    local current latest
-    current=$(git rev-parse HEAD)
-    latest=$(git rev-parse "origin/${BRANCH}" 2>/dev/null || echo "$current")
+        local current latest
+        current=$(git rev-parse HEAD)
+        latest=$(git rev-parse "origin/${BRANCH}" 2>/dev/null || echo "$current")
 
-    if [[ "$current" != "$latest" ]]; then
-        local commit_count
-        commit_count=$(git rev-list "${current}..${latest}" --count 2>/dev/null || echo "?")
-        log_info "Update available: ${commit_count} new commits"
+        if [[ "$current" != "$latest" ]]; then
+            local commit_count
+            commit_count=$(git rev-list "${current}..${latest}" --count 2>/dev/null || echo "?")
+            log_info "Update available: ${commit_count} new commits"
+        else
+            log_info "Already up to date"
+        fi
+    else
+        local current_hash
+        current_hash=$(cat "${APP_DIR}/.release-hash" 2>/dev/null || echo "unknown")
+        local tmp_file
+        tmp_file=$(mktemp)
+        if curl -fsSL -o "$tmp_file" "$PREBUILT_RELEASE_URL" 2>/dev/null; then
+            local remote_hash
+            remote_hash=$(sha256sum "$tmp_file" | cut -d' ' -f1)
+            if [[ "$current_hash" == "$remote_hash" ]]; then
+                log_info "Already up to date"
+            else
+                log_info "Update available (new prebuilt release)"
+            fi
+        else
+            log_warn "Cannot check for updates (download failed)"
+        fi
+        rm -f "$tmp_file"
     fi
+}
+
+show_interactive_menu() {
+    echo ""
+    echo -e "  ${CYAN}╔══════════════════════════════════════════╗${NC}"
+    echo -e "  ${CYAN}║${NC}      ${GREEN}FreeLLMAPI Deployment Manager${NC}        ${CYAN}║${NC}"
+    echo -e "  ${CYAN}╠══════════════════════════════════════════╣${NC}"
+    echo -e "  ${CYAN}║${NC}                                          ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}1)${NC} Install          (fresh install)     ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}2)${NC} Upgrade           (update version)    ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}3)${NC} Uninstall         (remove app)        ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}4)${NC} Status            (check service)     ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}5)${NC} Logs              (view logs)         ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}6)${NC} Restart           (restart service)   ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}7)${NC} Help              (more commands)     ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}  ${YELLOW}0)${NC} Exit                                   ${CYAN}║${NC}"
+    echo -e "  ${CYAN}║${NC}                                          ${CYAN}║${NC}"
+    echo -e "  ${CYAN}╚══════════════════════════════════════════╝${NC}"
+    echo ""
+
+    if is_installed; then
+        local port
+        port=$(grep -E "^PORT=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || echo "3001")
+        port="${port:-3001}"
+        local svc_status
+        svc_status=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo 'unknown')
+        if [[ "$svc_status" == "active" ]]; then
+            log_info "Service is running on port ${port}"
+        else
+            log_warn "Service is ${svc_status}"
+        fi
+    else
+        log_info "FreeLLMAPI is not installed"
+    fi
+
+    echo ""
+    read -r -p "  Select [0-7]: " choice
+
+    case "$choice" in
+        1) do_install ;;
+        2) do_upgrade "false" ;;
+        3) do_uninstall ;;
+        4) do_status ;;
+        5) do_logs ;;
+        6) do_restart ;;
+        7) show_help ;;
+        0) log_info "Bye!"; exit 0 ;;
+        *) log_error "Invalid choice"; exit 1 ;;
+    esac
 }
 
 show_help() {
@@ -1379,30 +1456,34 @@ Isolation features:
   - Project-specific swap file (won't touch existing swap)
 
 Examples:
+  # Interactive menu (no arguments)
+  sudo $(basename "$0")
+
   # Fresh install with defaults
-  $(basename "$0") install -y
+  sudo $(basename "$0") install -y
 
   # Install with custom port
-  $(basename "$0") install -y -p 8080
+  sudo $(basename "$0") install -y -p 8080
 
   # One-line install (prebuilt, recommended for low-spec servers)
   curl -fsSL https://raw.githubusercontent.com/zczy-k/freellmapi/${BRANCH}/deploy.sh | sudo bash -s install -y
 
   # Install with local build (for servers with enough RAM)
-  $(basename "$0") install -y --build
+  sudo $(basename "$0") install -y --build
 
   # Upgrade interactively
-  $(basename "$0") upgrade
+  sudo $(basename "$0") upgrade
 
   # Complete removal including data
-  $(basename "$0") uninstall -y
+  sudo $(basename "$0") uninstall -y
 
 EOF
 }
 
 main() {
     if [[ $# -eq 0 ]]; then
-        show_help
+        check_root
+        show_interactive_menu
         exit 0
     fi
 
