@@ -1143,8 +1143,14 @@ do_uninstall_internal() {
     systemctl disable "$SERVICE_NAME" 2>/dev/null || true
 
     if [[ -f "$DOMAIN_FILE" ]]; then
-        log_step "正在移除域名配置"
+        log_step "正在移除域名和 SSL 证书"
+        local domain
+        domain=$(head -1 "$DOMAIN_FILE" 2>/dev/null)
         do_remove_domain_silent
+        if [[ -n "$domain" ]] && command -v certbot &>/dev/null; then
+            certbot delete --cert-name "$domain" --non-interactive 2>/dev/null || true
+            log_info "SSL 证书已删除（${domain}）"
+        fi
     fi
 
     log_step "正在移除服务文件"
@@ -1743,7 +1749,7 @@ do_remove_domain() {
     fi
 
     local domain
-    domain=$(cat "$DOMAIN_FILE" 2>/dev/null)
+    domain=$(head -1 "$DOMAIN_FILE" 2>/dev/null)
 
     log_step "移除域名配置（${domain}）"
 
