@@ -8,10 +8,11 @@ import type {
   ChatToolDefinition,
   ChatToolChoice,
 } from '@freellmapi/shared/types.js';
-import { routeRequest, recordRateLimitHit, recordSuccess, type RouteResult } from '../services/router.js';
+import { routeRequest, recordRateLimitHit, recordSuccess, hasEnabledToolsModel, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown, getCooldownDurationForLimit } from '../services/ratelimit.js';
 import { getUnifiedApiKey } from '../db/index.js';
 import { contentToString } from '../lib/content.js';
+import { repairToolArguments, toolSchemaMap } from '../lib/tool-args.js';
 import {
   isRetryableError,
   timingSafeStringEqual,
@@ -296,6 +297,9 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
   const stream = reqData.stream ?? false;
   const messages = toChatMessages(reqData);
   const tools = toChatTools(reqData.tools);
+  // name → parameter schema, for repairing double-encoded tool arguments on
+  // the way back out (see lib/tool-args.ts).
+  const toolSchemas = toolSchemaMap(tools);
   const tool_choice = toChatToolChoice(reqData.tool_choice);
   const completionOpts = {
     temperature: reqData.temperature ?? undefined,
@@ -313,6 +317,22 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
   const estimatedTotal = estimatedInputTokens + (reqData.max_output_tokens ?? 1000);
   const preferredModel = getStickyModel(messages);
 
+  // Tool-bearing requests (the normal case for Codex/agent clients on this
+  // endpoint) must stay on models that emit structured tool_calls — a model
+  // that serializes the call into text strands the agent harness with a
+  // "successful" run it can't act on. Mirrors the /chat/completions gate.
+  const wantsTools = (tools?.length ?? 0) > 0;
+  if (wantsTools && !hasEnabledToolsModel()) {
+    res.status(422).json({
+      error: {
+        message: 'This request includes tools, but no tool-capable model is enabled. Enable a tool-calling model (e.g. GPT-OSS 120B, Gemini 3.5 Flash, GLM-4.7) in the Fallback Chain.',
+        type: 'invalid_request_error',
+        code: 'no_tools_model',
+      },
+    });
+    return;
+  }
+
   const responseId = newId('resp');
   const skipKeys = new Set<string>();
   let lastError: any = null;
@@ -328,7 +348,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
+      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, false, wantsTools);
     } catch (err: any) {
       const status = lastError ? 429 : (err.status ?? 503);
       const message = lastError
@@ -348,21 +368,6 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
 
     try {
       if (stream) {
-        // Headers + response.created on the first attempt that gets this far.
-        if (!streamStarted) {
-          res.setHeader('Content-Type', 'text/event-stream');
-          res.setHeader('Cache-Control', 'no-cache');
-          res.setHeader('Connection', 'keep-alive');
-          res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
-          const skeleton = {
-            id: responseId, object: 'response', created_at: nowUnix(),
-            status: 'in_progress', model: route.modelId, output: [], output_text: '',
-          };
-          sse('response.created', { response: skeleton });
-          sse('response.in_progress', { response: skeleton });
-          streamStarted = true;
-        }
-
         let outputIndex = 0;
         let msgItemId: string | null = null;
         let msgText = '';
@@ -373,6 +378,32 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
         const gen = route.provider.streamChatCompletion(route.apiKey, messages, route.modelId, completionOpts);
 
         for await (const chunk of gen) {
+          // LAZY header set — headers + the response.created/in_progress
+          // skeleton go out only once the provider actually streams a chunk.
+          // Sending them before the provider call (the previous behavior)
+          // committed the SSE response, so a provider error AT STREAM OPEN —
+          // e.g. OpenRouter 503ing a large-context request — was misclassified
+          // as mid-stream and returned to the client with NO failover and NO
+          // cooldown; the next request then hit the same broken model again
+          // (observed: 17 consecutive 503s to the same model while the rest of
+          // the chain sat idle). With lazy headers a connect-time error
+          // bubbles to the catch with streamStarted=false and takes the normal
+          // retry path. Mirrors the proxy's streaming handler.
+          if (!streamStarted) {
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+            res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
+            if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
+            const skeleton = {
+              id: responseId, object: 'response', created_at: nowUnix(),
+              status: 'in_progress', model: route.modelId, output: [], output_text: '',
+            };
+            sse('response.created', { response: skeleton });
+            sse('response.in_progress', { response: skeleton });
+            streamStarted = true;
+          }
+
           const delta = chunk.choices[0]?.delta;
           if (!delta) continue;
 
@@ -427,18 +458,41 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
           }
         }
 
+        // Empty completion — the provider returned 200 with no text AND no
+        // tool calls. Seen in production from nemotron-3-super on ~65k-token
+        // contexts: transport-level "success", zero usable output, so the
+        // agent client records a successful run it can't act on and its issue
+        // dead-ends. Nothing substantive has been emitted yet (output_item
+        // events only fire on the first delta; only the created/in_progress
+        // skeletons are out), so it's safe to fail over to the next model on
+        // the same SSE stream.
+        if (msgText.length === 0 && toolAcc.size === 0) {
+          logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, 'empty completion (no content, no tool_calls)');
+          skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
+          setCooldown(route.platform, route.modelId, route.keyId, getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }));
+          recordRateLimitHit(route.modelDbId);
+          lastError = new Error(`empty completion from ${route.displayName}`);
+          continue;
+        }
+
         // Finalize any open text item.
         if (msgItemId !== null) {
           sse('response.output_text.done', { item_id: msgItemId, output_index: 0, content_index: 0, text: msgText });
           sse('response.content_part.done', { item_id: msgItemId, output_index: 0, content_index: 0, part: { type: 'output_text', text: msgText, annotations: [] } });
           sse('response.output_item.done', { output_index: 0, item: { id: msgItemId, type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: msgText, annotations: [] }] } });
         }
-        // Finalize tool-call items.
+        // Finalize tool-call items. Arguments are repaired against the tool's
+        // parameter schema at this point (after the full string accumulated):
+        // models like GLM double-encode nested arrays/objects as strings, and
+        // Codex hard-rejects the call ("invalid type: string, expected a
+        // sequence"). Clients consume the *.done events / final response for
+        // arguments, so repairing here covers the streamed path too.
         const finalToolCalls: ChatToolCall[] = [];
         for (const acc of toolAcc.values()) {
-          sse('response.function_call_arguments.done', { item_id: acc.itemId, output_index: acc.outputIndex, arguments: acc.args });
-          sse('response.output_item.done', { output_index: acc.outputIndex, item: { id: acc.itemId, type: 'function_call', status: 'completed', call_id: acc.callId, name: acc.name, arguments: acc.args } });
-          finalToolCalls.push({ id: acc.callId, type: 'function', function: { name: acc.name, arguments: acc.args } });
+          const repairedArgs = repairToolArguments(acc.args, toolSchemas.get(acc.name));
+          sse('response.function_call_arguments.done', { item_id: acc.itemId, output_index: acc.outputIndex, arguments: repairedArgs });
+          sse('response.output_item.done', { output_index: acc.outputIndex, item: { id: acc.itemId, type: 'function_call', status: 'completed', call_id: acc.callId, name: acc.name, arguments: repairedArgs } });
+          finalToolCalls.push({ id: acc.callId, type: 'function', function: { name: acc.name, arguments: repairedArgs } });
         }
 
         const finalResponse = buildResponseObject({
@@ -458,9 +512,22 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
 
         const msg = result.choices[0]?.message;
         const text = contentToString(msg?.content ?? '');
-        const toolCalls = msg?.tool_calls ?? [];
+        const toolCalls = (msg?.tool_calls ?? []).map((tc) => ({
+          ...tc,
+          function: { ...tc.function, arguments: repairToolArguments(tc.function.arguments, toolSchemas.get(tc.function.name)) },
+        }));
         const promptTokens = result.usage?.prompt_tokens ?? estimatedInputTokens;
         const completionTokens = result.usage?.completion_tokens ?? Math.ceil(text.length / 4);
+
+        // Empty completion → fail over (see the streaming-path comment above).
+        if (!text && toolCalls.length === 0) {
+          logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, 'empty completion (no content, no tool_calls)');
+          skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
+          setCooldown(route.platform, route.modelId, route.keyId, getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }));
+          recordRateLimitHit(route.modelDbId);
+          lastError = new Error(`empty completion from ${route.displayName}`);
+          continue;
+        }
 
         recordTokens(route.platform, route.modelId, route.keyId, result.usage?.total_tokens ?? 0);
         recordSuccess(route.modelDbId);
@@ -501,7 +568,17 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
     }
   }
 
+  // Exhausted all retries. The streaming skeleton may already be on the wire
+  // (reachable since empty-completion failover can burn every attempt after
+  // streamStarted) — close the SSE stream with a failed event instead of
+  // writing JSON onto a committed event-stream response.
+  const exhaustedMsg = `All models rate-limited after ${MAX_RETRIES} attempts. Last: ${lastError?.message}`;
+  if (streamStarted) {
+    sse('response.failed', { response: { id: responseId, object: 'response', status: 'failed', error: { message: exhaustedMsg, type: 'rate_limit_error' } } });
+    res.end();
+    return;
+  }
   res.status(429).json({
-    error: { message: `All models rate-limited after ${MAX_RETRIES} attempts. Last: ${lastError?.message}`, type: 'rate_limit_error' },
+    error: { message: exhaustedMsg, type: 'rate_limit_error' },
   });
 });

@@ -3,11 +3,12 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
-import { routeRequest, recordRateLimitHit, recordSuccess, hasEnabledVisionModel, type RouteResult } from '../services/router.js';
+import { routeRequest, recordRateLimitHit, recordSuccess, hasEnabledVisionModel, hasEnabledToolsModel, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown, getCooldownDurationForLimit } from '../services/ratelimit.js';
 import { pruneRequestAnalytics } from '../services/request-retention.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
 import { contentToString, messageHasImage, normalizeOutboundContent } from '../lib/content.js';
+import { repairToolArguments, toolSchemaMap } from '../lib/tool-args.js';
 import { sanitizeProviderErrorMessage } from '../lib/error-redaction.js';
 
 export const proxyRouter = Router();
@@ -414,6 +415,23 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     n + (Array.isArray(m.content) ? m.content.filter(b => (b as { type?: string })?.type === 'image_url' || (b as { type?: string })?.type === 'image').length : 0), 0);
   const estimatedTotal = estimatedInputTokens + imageCount * IMAGE_TOKEN_ESTIMATE + (max_tokens ?? 1000);
 
+  // Tool-bearing requests must route to a model that emits STRUCTURED
+  // tool_calls. A model without real function-calling support serializes the
+  // call into its text answer — the request "succeeds" but the client's tool
+  // loop sees nothing, which is strictly worse than an error. Same up-front
+  // gate pattern as vision above.
+  const wantsTools = (tools?.length ?? 0) > 0;
+  if (wantsTools && !hasEnabledToolsModel()) {
+    res.status(422).json({
+      error: {
+        message: 'This request includes tools, but no tool-capable model is enabled. Enable a tool-calling model (e.g. GPT-OSS 120B, Gemini 3.5 Flash, GLM-4.7) in the Fallback Chain.',
+        type: 'invalid_request_error',
+        code: 'no_tools_model',
+      },
+    });
+    return;
+  }
+
   // Explicit `model` field pins routing. If the catalog has no enabled row
   // matching the requested id, return 400 — silently auto-routing to a
   // different model would be surprising to OpenAI-compatible clients.
@@ -450,7 +468,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, hasImage);
+      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, hasImage, wantsTools);
     } catch (err: any) {
       // No more models available
       if (lastError) {
@@ -506,9 +524,17 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           }
 
           if (!streamStarted) {
-            // Upstream returned no chunks — emit minimal successful stream.
-            res.setHeader('Content-Type', 'text/event-stream');
-            res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
+            // Upstream returned zero chunks — an empty completion in stream
+            // clothing. No headers are out yet, so fail over to the next model
+            // instead of handing the client a valid-looking empty stream
+            // (production case: nemotron-3-super returning nothing on large
+            // contexts while the request logs as success).
+            logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, 'empty completion (stream produced no chunks)');
+            skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
+            setCooldown(route.platform, route.modelId, route.keyId, getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }));
+            recordRateLimitHit(route.modelDbId);
+            lastError = new Error(`empty completion from ${route.displayName}`);
+            continue;
           }
           res.write('data: [DONE]\n\n');
           res.end();
@@ -540,6 +566,20 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
         );
 
+        // Empty completion (no text, no tool calls) → fail over rather than
+        // return a transport-level "success" the caller can't act on. Mirrors
+        // the zero-chunk streaming case above.
+        const respMsg = result.choices?.[0]?.message;
+        const respText = contentToString(respMsg?.content ?? '');
+        if (!respText && (respMsg?.tool_calls?.length ?? 0) === 0) {
+          logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, 'empty completion (no content, no tool_calls)');
+          skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
+          setCooldown(route.platform, route.modelId, route.keyId, getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }));
+          recordRateLimitHit(route.modelDbId);
+          lastError = new Error(`empty completion from ${route.displayName}`);
+          continue;
+        }
+
         const totalTokens = result.usage?.total_tokens ?? 0;
         recordTokens(route.platform, route.modelId, route.keyId, totalTokens);
         recordSuccess(route.modelDbId);
@@ -547,6 +587,18 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
+        // Repair double-encoded tool arguments against the request's tool
+        // schemas (e.g. GLM emitting an array parameter as a JSON string),
+        // so strict clients don't reject the call. Schema-gated — a true
+        // string parameter is never touched. See lib/tool-args.ts.
+        if (respMsg?.tool_calls?.length) {
+          const schemas = toolSchemaMap(tools);
+          for (const tc of respMsg.tool_calls) {
+            if (tc?.function?.arguments != null) {
+              tc.function.arguments = repairToolArguments(tc.function.arguments, schemas.get(tc.function.name));
+            }
+          }
+        }
         // Normalize array-shaped message.content to a string on the way out (#166).
         res.json(normalizeOutboundContent(result));
 
