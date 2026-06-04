@@ -12,7 +12,7 @@ export function PageHeader({
   divider?: boolean
 }) {
   return (
-    <div className={`flex items-end justify-between gap-6 mb-6 ${divider ? 'pb-6 border-b' : ''}`}>
+    <div className={`flex flex-wrap md:flex-nowrap items-end justify-between gap-6 mb-6 ${divider ? 'pb-6 border-b' : ''}`}>
       <div className="min-w-0">
         <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
         {description && (

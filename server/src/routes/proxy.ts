@@ -4,7 +4,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, hasEnabledVisionModel, hasEnabledToolsModel, type RouteResult } from '../services/router.js';
-import { recordRequest, recordTokens, setCooldown, getCooldownDurationForLimit } from '../services/ratelimit.js';
+import { recordRequest, recordTokens, setCooldown, getCooldownDurationForLimit, PAYMENT_REQUIRED_COOLDOWN_MS } from '../services/ratelimit.js';
 import { pruneRequestAnalytics } from '../services/request-retention.js';
 import { runEmbeddings, EmbeddingsError } from '../services/embeddings.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
@@ -238,7 +238,23 @@ export function isRetryableError(err: any): boolean {
     // limits, unsupported params). The matching pattern is "api error 400"
     // which comes from the OpenAI-compat provider's error formatting, not
     // a bare "400" which is deliberately non-retryable for validation errors.
-    || msg.includes('api error 400');
+    || msg.includes('api error 400')
+    // 402: this provider/key is out of credits (e.g. HuggingFace Router
+    // "API error 402: Payment required"). The SAME model often lives on another
+    // provider (Kimi K2.6 is on HF + Cloudflare + NVIDIA), so fail over instead
+    // of killing the workflow. Paired with a long cooldown (isPaymentRequiredError)
+    // so we don't re-hammer the broke key every retry.
+    || isPaymentRequiredError(err);
+}
+
+// A 402 Payment Required / out-of-credits error. Distinct from a transient 429:
+// it won't recover on the next window, so the caller benches the model+key with
+// PAYMENT_REQUIRED_COOLDOWN_MS (a full day) rather than the 90s transient cooldown.
+export function isPaymentRequiredError(err: any): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  return msg.includes('402') || msg.includes('payment required')
+    || msg.includes('insufficient_quota') || msg.includes('insufficient credit')
+    || msg.includes('insufficient balance');
 }
 
 // Pull the incremental text out of a streaming chunk for token counting.
@@ -599,10 +615,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           route.platform,
           route.modelId,
           route.keyId,
-          getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, {
-            rpd: route.rpdLimit,
-            tpd: route.tpdLimit,
-          }),
+          isPaymentRequiredError(err)
+            ? PAYMENT_REQUIRED_COOLDOWN_MS
+            : getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, {
+                rpd: route.rpdLimit,
+                tpd: route.tpdLimit,
+              }),
         );
         recordRateLimitHit(route.modelDbId);
         lastError = err;
