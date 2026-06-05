@@ -851,6 +851,19 @@ do_install() {
         log_info "    ${0} uninstall   - 卸载所有内容"
         log_info ""
         write_log "安装成功完成"
+        
+        if [[ "$YES_MODE" == "false" ]]; then
+            echo ""
+            log_info "是否立即配置域名和 SSL 证书？"
+            log_info "  配置后访问地址：https://你的域名"
+            log_info "  前提条件：域名已解析到此服务器，80 端口可访问"
+            read -r -p "  立即配置 [y/N]：" setup_domain_choice
+            if [[ "$setup_domain_choice" =~ ^[Yy]$ ]]; then
+                echo ""
+                log_info "正在跳转到域名配置..."
+                do_setup_domain
+            fi
+        fi
     else
         log_error "安装已完成但健康检查失败。"
         log_error "查看日志：journalctl -u ${SERVICE_NAME} -n 50"
