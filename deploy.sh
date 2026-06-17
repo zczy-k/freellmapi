@@ -668,10 +668,27 @@ EOF
 }
 
 set_permissions() {
-    mkdir -p "${DATA_DIR}"
+    # Ensure the service user exists (critical for chown below)
+    if ! id "$APP_NAME" &>/dev/null; then
+        log_warn "用户 '$APP_NAME' 不存在，正在创建..."
+        useradd --system --no-create-home --shell /usr/sbin/nologin "$APP_NAME" 2>/dev/null || \
+        useradd --system --no-create-home --shell /bin/false "$APP_NAME" 2>/dev/null || true
+    fi
+
+    # Create data directory before any chown operations
+    mkdir -p "${DATA_DIR}" 2>/dev/null || true
+
     chown -R root:root "$APP_DIR" 2>/dev/null || true
-    chown -R "${APP_NAME}:${APP_NAME}" "${DATA_DIR}" 2>/dev/null || true
-    chown "${APP_NAME}:${APP_NAME}" "$ENV_FILE" 2>/dev/null || true
+
+    # Ensure data directory is writable by the service user
+    if id "$APP_NAME" &>/dev/null; then
+        chown -R "${APP_NAME}:${APP_NAME}" "${DATA_DIR}" 2>/dev/null || true
+        chown "${APP_NAME}:${APP_NAME}" "$ENV_FILE" 2>/dev/null || true
+    else
+        log_warn "用户 '$APP_NAME' 创建失败，数据目录权限需要手动配置"
+        log_warn "  请运行：sudo chown -R <user>:<group> ${DATA_DIR}"
+    fi
+
     chmod 600 "$ENV_FILE" 2>/dev/null || true
     chmod 755 "${APP_DIR}/server/dist/index.js" 2>/dev/null || true
     if [[ -d "$NVM_DIR" ]]; then
