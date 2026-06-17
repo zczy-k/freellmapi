@@ -1,0 +1,11 @@
+# Auto-detect text files and normalize line endings
+* text=auto
+
+# Enforce LF line endings for shell scripts (critical for Linux execution)
+*.sh text eol=lf
+
+# Enforce LF for config/attribute files
+.gitattributes text eol=lf
+
+# Enforce LF for GitHub Actions workflows
+.github/workflows/*.yml text eol=lf

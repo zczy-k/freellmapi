@@ -1,0 +1,63 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/tashfeenahmed/freellmapi.git || true
+
+      - name: Fetch upstream
+        run: git fetch upstream main
+
+      - name: Check for changes
+        id: check
+        run: |
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/main)
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No upstream changes detected"
+          else
+            COMMIT_COUNT=$(git rev-list HEAD..upstream/main --count)
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Upstream has ${COMMIT_COUNT} new commits"
+          fi
+
+      - name: Merge upstream changes
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git merge upstream/main --no-edit
+
+      - name: Remove upstream-only workflows
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          rm -f .github/workflows/ci.yml .github/workflows/docker.yml
+          git add -A
+          git diff --cached --quiet || git commit -m "chore: remove upstream-only workflows (ci, docker)"
+
+      - name: Push changes
+        if: steps.check.outputs.has_changes == 'true'
+        run: git push origin main
+
+      - name: Summary
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          echo "### Upstream changes synced" >> $GITHUB_STEP_SUMMARY
+          echo "Merged $(git rev-list HEAD~1..HEAD --count) commit(s) from upstream" >> $GITHUB_STEP_SUMMARY
