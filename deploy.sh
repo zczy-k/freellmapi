@@ -669,13 +669,13 @@ EOF
 
 set_permissions() {
     mkdir -p "${DATA_DIR}"
-    chown -R root:root "$APP_DIR"
-    chown -R "${APP_NAME}:${APP_NAME}" "${DATA_DIR}"
-    chown "${APP_NAME}:${APP_NAME}" "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
+    chown -R root:root "$APP_DIR" 2>/dev/null || true
+    chown -R "${APP_NAME}:${APP_NAME}" "${DATA_DIR}" 2>/dev/null || true
+    chown "${APP_NAME}:${APP_NAME}" "$ENV_FILE" 2>/dev/null || true
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
     chmod 755 "${APP_DIR}/server/dist/index.js" 2>/dev/null || true
     if [[ -d "$NVM_DIR" ]]; then
-        chown -R root:root "$NVM_DIR"
+        chown -R root:root "$NVM_DIR" 2>/dev/null || true
     fi
 }
 
@@ -808,7 +808,7 @@ do_install() {
 
     create_env_file
     mkdir -p "${DATA_DIR}"
-    set_permissions
+    set_permissions || log_warn "权限设置出现警告（不影响运行）"
     create_systemd_service
     setup_auto_upgrade
     save_version
@@ -977,7 +977,7 @@ do_upgrade_prebuilt() {
 
         echo "$new_hash" > "${APP_DIR}/.release-hash"
 
-        set_permissions
+        set_permissions || log_warn "权限设置出现警告（不影响运行）"
         log_step "正在重启服务"
         systemctl restart "$SERVICE_NAME"
 
@@ -1007,7 +1007,7 @@ do_upgrade_prebuilt() {
             cp -a "${BACKUP_DIR}/.env.backup" "$ENV_FILE"
         fi
 
-        set_permissions
+        set_permissions || true
         systemctl start "$SERVICE_NAME"
 
         sleep 3
@@ -1103,7 +1103,7 @@ do_upgrade_build() {
 
     if [[ "$upgrade_failed" == "false" ]]; then
         prune_dev_deps || true
-        set_permissions
+        set_permissions || log_warn "权限设置出现警告（不影响运行）"
         log_step "正在重启服务"
         systemctl restart "$SERVICE_NAME"
 
@@ -1135,7 +1135,7 @@ do_upgrade_build() {
             cp -a "${BACKUP_DIR}/.env.backup" "$ENV_FILE"
         fi
 
-        set_permissions
+        set_permissions || true
         systemctl start "$SERVICE_NAME"
 
         sleep 3
