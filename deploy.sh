@@ -668,6 +668,7 @@ EOF
 }
 
 set_permissions() {
+    mkdir -p "${DATA_DIR}"
     chown -R root:root "$APP_DIR"
     chown -R "${APP_NAME}:${APP_NAME}" "${DATA_DIR}"
     chown "${APP_NAME}:${APP_NAME}" "$ENV_FILE"
