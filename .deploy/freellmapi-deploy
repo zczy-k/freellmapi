@@ -1,0 +1,164 @@
+#!/bin/bash
+# FreeLLMAPI 自动部署脚本 (服务器端执行)
+# 原则: 不覆盖本地配置 / 数据库在线一致性备份 / 健康检查失败自动回滚
+set -uo pipefail
+
+APP_DIR=/opt/freellmapi
+SERVICE=freellmapi.service
+BACKUP_ROOT=/opt/freellmapi-backup
+STAGING=/opt/freellmapi-staging
+STATE_FILE="$APP_DIR/.release-hash"
+HISTORY_FILE="$APP_DIR/.deploy-history"
+LOG_FILE=/var/log/freellmapi-deploy.log
+HEALTH_URL="http://127.0.0.1:3001/api/ping"
+MAX_BACKUPS=5
+HEALTH_RETRIES=15
+HEALTH_INTERVAL=2
+PRESERVE=(.env server/data)
+
+ARTIFACT=""; DEPS=""; TARGET_SHA=""; FORCE=0; MODE=deploy
+
+log()  { local m="[$(date '+%Y-%m-%d %H:%M:%S')] [$1] ${*:2}"; echo "$m"; echo "$m" >>"$LOG_FILE" 2>/dev/null||:; }
+die()  { log FATAL "$*"; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --artifact) ARTIFACT=$2; shift 2 ;;
+    --deps)     DEPS=$2;     shift 2 ;;
+    --sha)      TARGET_SHA=$2; shift 2 ;;
+    --force)    FORCE=1;     shift ;;
+    --check)    MODE=check;  shift ;;
+    --status)   MODE=status; shift ;;
+    *) die "未知参数: $1" ;;
+  esac
+done
+
+[ "$(id -u)" -eq 0 ] || die "必须 root 运行"
+mkdir -p "$BACKUP_ROOT"; touch "$LOG_FILE"
+
+show_status() {
+  echo "当前版本: $(cat "$STATE_FILE" 2>/dev/null||echo 未知)"
+  echo "服务状态: $(systemctl is-active "$SERVICE")"
+  echo "部署历史:"; tail -5 "$HISTORY_FILE" 2>/dev/null||echo "  (无)"
+}
+
+preflight() {
+  [ -f "$ARTIFACT" ] || die "产物不存在: $ARTIFACT"
+  [ -n "$TARGET_SHA" ] || die "缺少 --sha"
+  local m; m=$(df -Pm "$APP_DIR"|awk 'NR==2{print $4}')
+  [ "$m" -ge 500 ] || die "磁盘不足 ${m}MB"
+  tar -tzf "$ARTIFACT" | grep -q "server/dist/index.js" \
+    || die "产物缺少 server/dist/index.js"
+  for p in "${PRESERVE[@]}"; do
+    [ -e "$APP_DIR/$p" ] && log INFO "保留项: $p"
+  done
+}
+
+backup_db() {
+  local db="$APP_DIR/server/data/freeapi.db"
+  [ -f "$db" ] || { log WARN "无数据库"; return 0; }
+  local dst="${BACKUP_ROOT}/db-$1.db"
+  # 用 SQLite 在线备份API，WAL 模式下也能拿到一致快照
+  python3 - "$db" "$dst" <<'PY'
+import sqlite3,sys
+s=sqlite3.connect(f"file:{sys.argv[1]}?mode=ro",uri=True,timeout=30)
+d=sqlite3.connect(sys.argv[2]); s.backup(d); d.close(); s.close()
+PY
+  [ $? -eq 0 ] || die "数据库备份失败"
+  python3 -c "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);r=c.execute('PRAGMA integrity_check').fetchone()[0];c.close();sys.exit(0 if r=='ok' else 1)" "$dst" \
+    || die "备份完整性校验失败"
+  log INFO "数据库已备份并校验通过"
+}
+
+backup_rel() {
+  local d="${BACKUP_ROOT}/release-$1"; mkdir -p "$d"
+  for i in server/dist client/dist shared package.json package-lock.json; do
+    [ -e "$APP_DIR/$i" ] && cp -a "$APP_DIR/$i" "$d/" 2>/dev/null||:
+  done
+  cp -a "$STATE_FILE" "$d/.release-hash" 2>/dev/null||:
+  ls -1dt "$BACKUP_ROOT"/release-* 2>/dev/null|tail -n +$((MAX_BACKUPS+1))|while read -r o; do
+    log INFO "清理旧备份 $o"; rm -rf "$o"; done
+}
+
+stage() {
+  log INFO "解压到暂存区"
+  rm -rf "$STAGING"; mkdir -p "$STAGING"
+  tar -xzf "$ARTIFACT" -C "$STAGING" || die "解压失败"
+  [ -f "$STAGING/manifest.json" ] && log INFO "清单: $(cat "$STAGING/manifest.json")"
+}
+
+need_deps() {
+  local o="$APP_DIR/package-lock.json" n="$STAGING/package-lock.json"
+  [ -f "$n" ] || { echo unknown; return; }
+  [ -f "$o" ] || { echo yes; return; }
+  [ "$(sha256sum "$o"|cut -d' ' -f1)" != "$(sha256sum "$n"|cut -d' ' -f1)" ] && echo yes || echo no
+}
+
+switch() {
+  log INFO "切换版本"
+  systemctl stop "$SERVICE" || die "停服失败"
+  for i in server/dist client/dist shared package.json package-lock.json manifest.json; do
+    [ -e "$STAGING/$i" ] || continue
+    rm -rf "${APP_DIR:?}/${i}"; cp -a "$STAGING/$i" "$APP_DIR/" || die "替换 $i 失败"
+    log INFO "已替换 $i"
+  done
+  case "$(need_deps)" in
+    yes)
+      [ -f "$DEPS" ] || die "lock已变化但无依赖包，中止"
+      log INFO "安装新 node_modules"
+      rm -rf "${APP_DIR:?}/node_modules"; tar -xzf "$DEPS" -C "$APP_DIR" || die "依赖解压失败"
+      ;;
+    *) log INFO "依赖未变化，沿用现有 node_modules" ;;
+  esac
+  chown -R freellmapi:freellmapi "$APP_DIR" 2>/dev/null||:
+  echo "$TARGET_SHA" > "$STATE_FILE"
+  echo "$(date '+%F %T') $TARGET_SHA" >> "$HISTORY_FILE"
+  log INFO "版本记录: $TARGET_SHA"
+}
+
+health() {
+  log INFO "健康检查"
+  local i c
+  for i in $(seq 1 $HEALTH_RETRIES); do
+    systemctl start "$SERVICE" 2>/dev/null||:
+    sleep "$HEALTH_INTERVAL"
+    c=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$HEALTH_URL" 2>/dev/null)
+    [ "$c" = 200 ] && { log INFO "通过(第${i}次)"; return 0; }
+  done
+  log ERROR "健康检查失败"; return 1
+}
+
+rollback() {
+  local s="${BACKUP_ROOT}/release-$1"
+  log ERROR "!!! 回滚 !!!"
+  [ -d "$s" ] || { log ERROR "无备份"; return 1; }
+  systemctl stop "$SERVICE" 2>/dev/null||:
+  for i in server/dist client/dist shared package.json package-lock.json; do
+    [ -e "$s/$i" ] || continue
+    rm -rf "${APP_DIR:?}/${i}"; cp -a "$s/$i" "$APP_DIR/"; log INFO "回滚 $i"
+  done
+  cp -a "$s/.release-hash" "$STATE_FILE" 2>/dev/null||:
+  chown -R freellmapi:freellmapi "$APP_DIR" 2>/dev/null||:
+  systemctl start "$SERVICE"||log ERROR "旧版启动失败"
+  sleep 5
+  [ "$(curl -s -o /dev/null -w %{http_code} --max-time 5 "$HEALTH_URL")" = 200 ] \
+    && { log INFO "回滚成功"; return 0; }
+  log ERROR "回滚后仍异常，需人工介入"; return 1
+}
+
+main() {
+  case "$MODE" in status) show_status; exit 0;; check) log INFO "当前 $(cat "$STATE_FILE" 2>/dev/null||echo ?)"; exit 0;; esac
+  log INFO "==== 开始部署 ===="
+  local cur; cur=$(cat "$STATE_FILE" 2>/dev/null||echo unknown)
+  if [ "$cur" = "$TARGET_SHA" ] && [ "$FORCE" -eq 0 ]; then
+    log INFO "版本一致，跳过"; exit 0
+  fi
+  log INFO "当前=$cur 目标=$TARGET_SHA"
+  preflight
+  local s; s=$(date '+%Y%m%d-%H%M%S')
+  backup_db "$s"; backup_rel "$s"; stage; switch "$s"
+  health && { rm -rf "$STAGING"; log INFO "==== 部署成功 ===="; exit 0; }
+  log ERROR "健康检查未通过"
+  rollback "$s" && exit 1 || exit 2
+}
+main "$@"
