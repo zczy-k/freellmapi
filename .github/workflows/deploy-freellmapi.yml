@@ -1,0 +1,78 @@
+name: Deploy to Server
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+
+concurrency:
+  group: deploy-freellmapi
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建
+        run: npm run build
+
+      - name: 生成产物清单
+        run: |
+          SHA=$(git rev-parse HEAD)
+          cat > manifest.json <<EOF
+          {
+            "commit": "$SHA",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "node_version": "$(node -v)"
+          }
+          EOF
+
+      - name: 打包
+        run: |
+          mkdir -p payload/server payload/client
+          cp -r server/dist payload/server/
+          cp -r client/dist payload/client/
+          [ -d shared/dist ] && { mkdir -p payload/shared; cp -r shared/dist payload/shared/; } || true
+          cp manifest.json package.json package-lock.json payload/
+          test -f payload/server/dist/index.js || { echo "::error::构建失败"; exit 1; }
+          tar -czf freellmapi-release.tar.gz -C payload .
+          tar -czf freellmapi-deps.tar.gz node_modules
+
+      - name: 配置 SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: 上传并部署
+        run: |
+          scp -i ~/.ssh/deploy_key \
+            freellmapi-release.tar.gz freellmapi-deps.tar.gz \
+            .deploy/freellmapi-deploy \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/
+          SHA=$(git rev-parse HEAD)
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "chmod +x /tmp/freellmapi-deploy && \
+             /tmp/freellmapi-deploy --artifact /tmp/freellmapi-release.tar.gz \
+             --deps /tmp/freellmapi-deps.tar.gz --sha $SHA; \
+             RC=\$?; rm -f /tmp/freellmapi-*.tar.gz /tmp/freellmapi-deploy; exit \$RC"
+
+      - name: 清理
+        if: always()
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "rm -f /tmp/freellmapi-*.tar.gz /tmp/freellmapi-deploy" || true
